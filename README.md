@@ -19,3 +19,5 @@ This study includes the following:
 4. Rendering the character with vertex colors and bone transforms
 
 ### Stage 1.2: Blended Animations
+
+### Stage 1.3: PC Controls
