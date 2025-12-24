@@ -21,3 +21,5 @@ This study includes the following:
 ### Stage 1.2: Blended Animations
 
 ### Stage 1.3: PC Controls
+
+### Stage 1.4: Mobile Controls
