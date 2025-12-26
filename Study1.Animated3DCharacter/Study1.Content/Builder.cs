@@ -34,7 +34,7 @@ public class Builder : ContentBuilder
 
         content.Include("Effects/SkinnedVertexColoredEffect.fx");
 
-        content.Include("Models/man.glb", contentProcessor: new GlbModelProcessor { ReverseIndexWinding = true });
+        content.Include("Models/man.glb", contentProcessor: new GlbModelProcessor { ReverseIndexWinding = true, SrgbColorCorrection = true });
         content.Include("Models/man_anims.glb", contentProcessor: new GlbAnimationSetProcessor());
 
         return content;
