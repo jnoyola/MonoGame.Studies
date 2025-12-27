@@ -13,7 +13,7 @@ public class Game : Microsoft.Xna.Framework.Game
 
     private Matrix _cameraProjection;
     
-    private Grid _grid;
+    private Grid? _grid;
 
     private Matrix _characterTransform;
     private Vector3 _characterInstructedVelocity;
@@ -28,19 +28,13 @@ public class Game : Microsoft.Xna.Framework.Game
     {
         _graphics = new GraphicsDeviceManager(this)
         {
-            PreferredBackBufferWidth = 1920,
-            PreferredBackBufferHeight = 1080,
+            PreferredBackBufferWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width,
+            PreferredBackBufferHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height,
+            IsFullScreen = true
         };
         IsMouseVisible = true;
         Content.RootDirectory = "Content";
 
-        _cameraProjection = Matrix.CreatePerspectiveFieldOfView(
-            MathHelper.ToRadians(45),
-            GraphicsDevice.Viewport.AspectRatio,
-            0.1f,
-            100f
-        );
-        _grid = new Grid(GraphicsDevice, 20);
         _characterTransform = Matrix.Identity;
         _characterHeading = Vector3.UnitZ;
         _characterSpeed = 4f;
@@ -54,6 +48,15 @@ public class Game : Microsoft.Xna.Framework.Game
     protected override void LoadContent()
     {
         ReaderRegistry.Initialize();
+
+        _cameraProjection = Matrix.CreatePerspectiveFieldOfView(
+            MathHelper.ToRadians(45),
+            GraphicsDevice.Viewport.AspectRatio,
+            0.1f,
+            100f
+        );
+
+        _grid = new Grid(GraphicsDevice, 20);
 
         _characterModel = Content.Load<Model>("Models/man");
         var characterAnims = Content.Load<AnimationSet>("Models/man_anims");
@@ -113,7 +116,7 @@ public class Game : Microsoft.Xna.Framework.Game
         var cameraPosition = cameraTarget + new Vector3(0, 6, -8);
         var cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
 
-        _grid.Draw(cameraView, _cameraProjection);
+        _grid?.Draw(cameraView, _cameraProjection);
         DrawCharacter(gameTime, cameraView);
     }
 
