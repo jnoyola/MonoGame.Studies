@@ -20,39 +20,25 @@ public struct AnimationPlayer(AnimationSet animationSet)
     }
 
     private readonly AnimationSet animationSet = animationSet;
-    private Animation? animation = null;
-    private float time = 0;
-    private float playbackSpeed = 0;
-    private bool isLooping = false;
-    private readonly AnimationChannelState[] channelStates = new AnimationChannelState[animationSet.BoneChannelCount];
-    private float transitionTotalDuration = 0;
-    private float transitionRemainingDuration = 0;
-    private Animation? transitionAnimation;
-    private readonly AnimationChannelSnapshot[] transitionChannelSnapshots = new AnimationChannelSnapshot[animationSet.BoneChannelCount];
+    private AnimationState state;
 
     public void Restart(string animation, float playbackSpeed = 1.0f, bool loop = false)
     {
-        this.animation = animationSet.Get(animation);
-        time = 0;
-        this.playbackSpeed = playbackSpeed;
-        isLooping = loop;
-        for (int channelIndex = 0; channelIndex < channelStates.Length; ++channelIndex)
-        {
-            channelStates[channelIndex].TranslationFrameIndex = 0;
-            channelStates[channelIndex].RotationFrameIndex = 0;
-            channelStates[channelIndex].ScaleFrameIndex = 0;
-        }
+        state.Animation = animationSet.Get(animation);
+        state.Time = 0;
+        state.PlaybackSpeed = playbackSpeed;
+        state.IsLooping = loop;
     }
 
     public void Play(string animation, float playbackSpeed = 1.0f, bool loop = false, float transitionDuration = 0.15f)
     {
-        if (this.animation.HasValue)
+        if (state.Animation.HasValue)
         {
-            if (this.animation.Value.Name == animation)
+            if (state.Animation.Value.Name == animation)
             {
                 // It's the same animation. Update the playback settings.
-                this.playbackSpeed = playbackSpeed;
-                isLooping = loop;
+                state.PlaybackSpeed = playbackSpeed;
+                state.IsLooping = loop;
                 return;
             }
             else
@@ -67,80 +53,58 @@ public struct AnimationPlayer(AnimationSet animationSet)
 
     public void Stop()
     {
-        animation = null;
+        state.Animation = null;
     }
 
     public void UpdateTime(GameTime gameTime)
     {
-        if (!animation.HasValue)
+        if (!state.Animation.HasValue)
         {
             return;
         }
 
-        time += (float)gameTime.ElapsedGameTime.TotalSeconds * playbackSpeed;
-        if (time >= animation.Value.DurationInSeconds)
+        state.Time += (float)gameTime.ElapsedGameTime.TotalSeconds * state.PlaybackSpeed;
+        if (state.Time >= state.Animation.Value.DurationInSeconds)
         {
-            if (isLooping)
+            if (state.IsLooping)
             {
-                time %= animation.Value.DurationInSeconds;
+                state.Time %= state.Animation.Value.DurationInSeconds;
             }
             else
             {
-                animation = null;
+                state.Animation = null;
                 return;
             }
         }
-        else if (time < 0)
+        else if (state.Time < 0)
         {
-            if (isLooping)
+            if (state.IsLooping)
             {
-                time = animation.Value.DurationInSeconds + (time % animation.Value.DurationInSeconds);
+                state.Time = state.Animation.Value.DurationInSeconds + (state.Time % state.Animation.Value.DurationInSeconds);
             }
             else
             {
-                animation = null;
+                state.Animation = null;
                 return;
             }
-        }
-
-        for (int channelIndex = 0; channelIndex < animation.Value.BoneChannels.Count; ++channelIndex)
-        {
-            channelStates[channelIndex].TranslationFrameIndex = GetTargetFrameIndex(
-                animation.Value.BoneChannels[channelIndex].Translations.Keyframes,
-                channelStates[channelIndex].TranslationFrameIndex,
-                time,
-                playbackSpeed
-            );
-            channelStates[channelIndex].RotationFrameIndex = GetTargetFrameIndex(
-                animation.Value.BoneChannels[channelIndex].Rotations.Keyframes,
-                channelStates[channelIndex].RotationFrameIndex,
-                time,
-                playbackSpeed
-            );
-            channelStates[channelIndex].ScaleFrameIndex = GetTargetFrameIndex(
-                animation.Value.BoneChannels[channelIndex].Scales.Keyframes,
-                channelStates[channelIndex].ScaleFrameIndex,
-                time,
-                playbackSpeed
-            );
         }
 
         // Update the transition time if we're transitioning from a previous animation.
-        if (transitionRemainingDuration > 0)
+        if (state.TransitionRemainingDuration > 0)
         {
-            transitionRemainingDuration -= (float)gameTime.ElapsedGameTime.TotalSeconds;
-            if (transitionRemainingDuration < 0)
+            state.TransitionRemainingDuration -= (float)gameTime.ElapsedGameTime.TotalSeconds;
+            if (state.TransitionRemainingDuration < 0)
             {
-                transitionTotalDuration = 0;
-                transitionRemainingDuration = 0;
-                transitionAnimation = null;
+                state.TransitionTotalDuration = 0;
+                state.TransitionRemainingDuration = 0;
+                state.TransitionAnimation = null;
             }
         }
     }
 
     public void SetBoneTransform(Bone bone, out Matrix outMatrix)
     {
-        if (!animation.HasValue)
+        if (!state.Animation.HasValue)
         {
             outMatrix = bone.LocalTransform;
             return;
@@ -148,58 +112,111 @@ public struct AnimationPlayer(AnimationSet animationSet)
 
         // TODO: make this a predetermined mapping?
         var boneIndex = 0;
-        while (animation.Value.BoneChannels[boneIndex].BoneName != bone.Name)
+        while (state.Animation.Value.BoneChannels[boneIndex].BoneName != bone.Name)
         {
             ++boneIndex;
         }
 
         // If the animation doesn't have a channel for the requested bone, set the bone transform to be the bone's
         // unanimated transform by default. Note this doesn't apply the transition, and may look choppy.
-        if (boneIndex == animation.Value.BoneChannels.Count)
+        if (boneIndex == state.Animation.Value.BoneChannels.Count)
         {
             outMatrix = bone.LocalTransform;
             return;
         }
 
-        var channelState = channelStates[boneIndex];
-        var translation = Interpolate(
-            animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-            animation.Value.DurationInSeconds,
-            channelState.TranslationFrameIndex,
-            time,
-            playbackSpeed
+        var translationFrameIndex = FindFrameIndex(
+            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
+            state.Time,
+            state.PlaybackSpeed
         );
-        var rotation = Interpolate(
-            animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-            animation.Value.DurationInSeconds,
-            channelState.RotationFrameIndex,
-            time,
-            playbackSpeed
+        var rotationFrameIndex = FindFrameIndex(
+            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+            state.Time,
+            state.PlaybackSpeed
         );
-        var scale = Interpolate(
-            animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-            animation.Value.DurationInSeconds,
-            channelState.ScaleFrameIndex,
-            time,
-            playbackSpeed
+        var scaleFrameIndex = FindFrameIndex(
+            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+            state.Time,
+            state.PlaybackSpeed
+        );
+
+        var translation = Sample(
+            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
+            state.Animation.Value.DurationInSeconds,
+            translationFrameIndex,
+            state.Time,
+            state.PlaybackSpeed
+        );
+        var rotation = Sample(
+            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+            state.Animation.Value.DurationInSeconds,
+            rotationFrameIndex,
+            state.Time,
+            state.PlaybackSpeed
+        );
+        var scale = Sample(
+            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+            state.Animation.Value.DurationInSeconds,
+            scaleFrameIndex,
+            state.Time,
+            state.PlaybackSpeed
         );
 
         // If we're transitioning from a previous animation, interpolate between the transition snapshot and the current frame.
-        if (transitionRemainingDuration > 0 && transitionAnimation.HasValue)
+        if (state.TransitionRemainingDuration > 0 && state.TransitionAnimation.HasValue)
         {
             // TODO: make this a predetermined mapping?
-            var prevBoneIndex = 0;
-            while (transitionAnimation.Value.BoneChannels[prevBoneIndex].BoneName != bone.Name)
+            var transitionBoneIndex = 0;
+            while (state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].BoneName != bone.Name)
             {
-                ++prevBoneIndex;
+                ++transitionBoneIndex;
             }
 
-            if (prevBoneIndex < transitionAnimation.Value.BoneChannels.Count)
+            if (transitionBoneIndex < state.TransitionAnimation.Value.BoneChannels.Count)
             {
-                var transitionProgress = 1 - (transitionRemainingDuration / transitionTotalDuration);
-                translation = Interpolate(transitionChannelSnapshots[prevBoneIndex].Translation, translation, transitionProgress);
-                rotation = Interpolate(transitionChannelSnapshots[prevBoneIndex].Rotation, rotation, transitionProgress);
-                scale = Interpolate(transitionChannelSnapshots[prevBoneIndex].Scale, scale, transitionProgress);
+                var transitionTranslationFrameIndex = FindFrameIndex(
+                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+                var transitionRotationFrameIndex = FindFrameIndex(
+                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Rotations.Keyframes,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+                var transitionScaleFrameIndex = FindFrameIndex(
+                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Scales.Keyframes,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+
+                var transitionTranslation = Sample(
+                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
+                    state.TransitionAnimation.Value.DurationInSeconds,
+                    transitionTranslationFrameIndex,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+                var transitionRotation = Sample(
+                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+                    state.TransitionAnimation.Value.DurationInSeconds,
+                    transitionRotationFrameIndex,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+                var transitionScale = Sample(
+                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+                    state.TransitionAnimation.Value.DurationInSeconds,
+                    transitionScaleFrameIndex,
+                    state.TransitionTime,
+                    state.TransitionPlaybackSpeed
+                );
+
+                var transitionProgress = 1 - (state.TransitionRemainingDuration / state.TransitionTotalDuration);
+                translation = Interpolate(transitionTranslation, translation, transitionProgress);
+                rotation = Interpolate(transitionRotation, rotation, transitionProgress);
+                scale = Interpolate(transitionScale, scale, transitionProgress);
             }
         }
 
@@ -215,37 +232,70 @@ public struct AnimationPlayer(AnimationSet animationSet)
         // }
     }
 
-    private static ushort GetTargetFrameIndex<T>(
-        Keyframe<T>[] keyframes, ushort currentFrameIndex, float targetTime, float playbackSpeed
+    private static ushort FindFrameIndex<T>(
+        Keyframe<T>[] keyframes, float targetTime, float playbackSpeed
     ) where T : struct
     {
-        if (playbackSpeed > 0)
-        {
-            if (keyframes[currentFrameIndex].Time > targetTime && keyframes[0].Time <= targetTime)
-            {
-                currentFrameIndex = 0;
-            }
-            while (currentFrameIndex < keyframes.Length - 1 && keyframes[currentFrameIndex + 1].Time <= targetTime)
-            {
-                ++currentFrameIndex;
-            }
-        }
-        else if (playbackSpeed < 0)
-        {
-            if (keyframes[currentFrameIndex].Time < targetTime && keyframes[keyframes.Length - 1].Time >= targetTime)
-            {
-                currentFrameIndex = (ushort)(keyframes.Length - 1);
-            }
-            while (currentFrameIndex > 0 && keyframes[currentFrameIndex - 1].Time >= targetTime)
-            {
-                --currentFrameIndex;
-            }
-        }
+        int left = 0;
+        int right = keyframes.Length - 1;
 
-        return currentFrameIndex;
+        if (playbackSpeed >= 0)
+        {
+            while (left <= right)
+            {
+                int mid = left + (right - left) / 2;
+                int next = mid + 1;
+                float midTime = keyframes[mid].Time;
+
+                if (
+                    midTime <= targetTime
+                    && (next >= keyframes.Length || keyframes[next].Time > targetTime)
+                )
+                {
+                    return (ushort)mid;
+                }
+                else if (midTime < targetTime)
+                {
+                    left = mid + 1;
+                }
+                else
+                {
+                    right = mid - 1;
+                }
+            }
+
+            return (ushort)(right >= 0 ? right : 0);
+        }
+        else
+        {
+            while (left <= right)
+            {
+                int mid = left + (right - left) / 2;
+                int prev = mid - 1;
+                float midTime = keyframes[mid].Time;
+
+                if (
+                    midTime >= targetTime
+                    && (prev < 0 || keyframes[prev].Time < targetTime)
+                )
+                {
+                    return (ushort)mid;
+                }
+                else if (midTime > targetTime)
+                {
+                    left = mid + 1;
+                }
+                else
+                {
+                    right = mid - 1;
+                }
+            }
+
+            return (ushort)(right >= 0 ? right : 0);
+        }
     }
 
-    private static Vector3 Interpolate(Keyframe<Vector3>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
+    private static Vector3 Sample(Keyframe<Vector3>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
     {
         ref readonly var currKeyframe = ref keyframes[frameIndex];
 
@@ -273,7 +323,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private static Quaternion Interpolate(Keyframe<Quaternion>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
+    private static Quaternion Sample(Keyframe<Quaternion>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
     {
         ref readonly var currKeyframe = ref keyframes[frameIndex];
 
@@ -313,41 +363,18 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private void SnapshotTransitionState(float transitionDuration)
     {
         // This will look very similar to SetBoneTransform because we're basically snapshotting the currently rendered transforms.
-        if (transitionDuration <= 0 || !animation.HasValue)
+        if (transitionDuration <= 0 || !state.Animation.HasValue)
         {
-            transitionTotalDuration = 0;
-            transitionRemainingDuration = 0;
-            transitionAnimation = null;
+            state.TransitionTotalDuration = 0;
+            state.TransitionRemainingDuration = 0;
+            state.TransitionAnimation = null;
             return;
         }
 
-        transitionTotalDuration = transitionDuration;
-        transitionRemainingDuration = transitionDuration;
-        transitionAnimation = animation;
-        for (int boneIndex = 0; boneIndex < animation.Value.BoneChannels.Count; ++boneIndex)
-        {
-            var channelState = channelStates[boneIndex];
-            transitionChannelSnapshots[boneIndex].Translation = Interpolate(
-                animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-                animation.Value.DurationInSeconds,
-                channelState.TranslationFrameIndex,
-                time,
-                playbackSpeed
-            );
-            transitionChannelSnapshots[boneIndex].Rotation = Interpolate(
-                animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-                animation.Value.DurationInSeconds,
-                channelState.RotationFrameIndex,
-                time,
-                playbackSpeed
-            );
-            transitionChannelSnapshots[boneIndex].Scale = Interpolate(
-                animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-                animation.Value.DurationInSeconds,
-                channelState.ScaleFrameIndex,
-                time,
-                playbackSpeed
-            );
-        }
+        state.TransitionTotalDuration = transitionDuration;
+        state.TransitionRemainingDuration = transitionDuration;
+        state.TransitionAnimation = state.Animation;
+        state.TransitionTime = state.Time;
+        state.TransitionPlaybackSpeed = state.PlaybackSpeed;
     }
 }
