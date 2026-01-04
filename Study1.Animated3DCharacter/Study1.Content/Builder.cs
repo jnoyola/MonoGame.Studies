@@ -34,6 +34,8 @@ public class Builder : ContentBuilder
 
         content.Include("Effects/SkinnedVertexColoredEffect.fx");
 
+        content.Include("Fonts/Tahoma_14.spritefont");
+
         content.Include("Models/man.glb", contentProcessor: new GlbModelProcessor { ReverseIndexWinding = true, SrgbColorCorrection = true });
         content.Include("Models/man_anims.glb", contentProcessor: new GlbAnimationSetProcessor());
 
