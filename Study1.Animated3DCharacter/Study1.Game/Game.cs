@@ -194,11 +194,11 @@ public class Game : Microsoft.Xna.Framework.Game
     {
         if (_characterInstructedVelocity == Vector3.Zero)
         {
-            _animationPlayer.Play("idle", loop: true);
+            _animationPlayer.Play(0, "idle", loop: true);
         }
         else
         {
-            _animationPlayer.Play("run_forward", _characterSpeed / 3, loop: true);
+            _animationPlayer.Play(0, "run_forward", _characterSpeed / 3, loop: true);
         }
     }
 }

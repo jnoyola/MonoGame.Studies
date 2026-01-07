@@ -1,8 +1,20 @@
+using System.Runtime.CompilerServices;
 using Study1.ContentFramework.Models;
 
 namespace Study1.Game;
 
 public struct AnimationState
+{
+    [InlineArray(AnimationLayers.MaxLayerCount)]
+    public struct AnimationLayerStates
+    {
+        private AnimationLayerState _element0;
+    }
+
+    public AnimationLayerStates Layers;
+}
+
+public struct AnimationLayerState
 {
     public Animation? Animation { get; set; }
     public float Time { get; set; }
@@ -15,4 +27,5 @@ public struct AnimationState
     public float TransitionRemainingDuration { get; set; }
 
     public bool IsLooping { get; set; }
+    public float Weight { get; set; }
 }

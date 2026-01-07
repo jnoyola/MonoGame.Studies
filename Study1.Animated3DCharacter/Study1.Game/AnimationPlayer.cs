@@ -22,198 +22,229 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private readonly AnimationSet animationSet = animationSet;
     private AnimationState state;
 
-    public void Restart(string animation, float playbackSpeed = 1.0f, bool loop = false)
+    public void Restart(int layer, string animation, float playbackSpeed = 1.0f, bool loop = false)
     {
-        state.Animation = animationSet.Get(animation);
-        state.Time = 0;
-        state.PlaybackSpeed = playbackSpeed;
-        state.IsLooping = loop;
+        state.Layers[layer].Animation = animationSet.Get(animation);
+        state.Layers[layer].Time = 0;
+        state.Layers[layer].PlaybackSpeed = playbackSpeed;
+        state.Layers[layer].IsLooping = loop;
     }
 
-    public void Play(string animation, float playbackSpeed = 1.0f, bool loop = false, float transitionDuration = 0.15f)
+    public void Play(int layer, string animation, float playbackSpeed = 1.0f, bool loop = false, float transitionDuration = 0.15f)
     {
-        if (state.Animation.HasValue)
+        var currAnimation = state.Layers[layer].Animation;
+        if (currAnimation.HasValue)
         {
-            if (state.Animation.Value.Name == animation)
+            if (currAnimation.Value.Name == animation)
             {
                 // It's the same animation. Update the playback settings.
-                state.PlaybackSpeed = playbackSpeed;
-                state.IsLooping = loop;
+                state.Layers[layer].PlaybackSpeed = playbackSpeed;
+                state.Layers[layer].IsLooping = loop;
                 return;
             }
             else
             {
                 // It's a new animation, but we already had one playing. Transition from the previous one.
-                SnapshotTransitionState(transitionDuration);
+                SnapshotTransitionState(layer, transitionDuration);
             }
         }
 
-        Restart(animation, playbackSpeed, loop);
+        Restart(layer, animation, playbackSpeed, loop);
     }
 
-    public void Stop()
+    public void Stop(int layer = -1)
     {
-        state.Animation = null;
+        if (layer == -1)
+        {
+            for (int i = 0; i < AnimationState.LayerCount; ++i)
+            {
+                state.Layers[i].Animation = null;
+            }
+        }
+        else
+        {
+            state.Layers[layer].Animation = null;
+        }
     }
 
     public void UpdateTime(GameTime gameTime)
     {
-        if (!state.Animation.HasValue)
+        for (int layer = 0; layer < AnimationState.LayerCount; ++layer)
+        {
+            UpdateLayerTime(ref state.Layers[layer], gameTime);
+        }
+    }
+
+    public void SetBoneTransform(Bone bone, ref Matrix outMatrix)
+    {
+        for (int layer = 0; layer < AnimationState.LayerCount; ++layer)
+        {
+            if (layer == 0 && !state.Layers[layer].Animation.HasValue)
+            {
+                outMatrix = bone.LocalTransform;
+            }
+
+            SetLayerBoneTransform(ref state.Layers[layer], bone, ref outMatrix);
+        }
+    }
+
+    private void UpdateLayerTime(ref AnimationLayer layer, GameTime gameTime)
+    {
+        if (!layer.Animation.HasValue)
         {
             return;
         }
 
-        state.Time += (float)gameTime.ElapsedGameTime.TotalSeconds * state.PlaybackSpeed;
-        if (state.Time >= state.Animation.Value.DurationInSeconds)
+        layer.Time += (float)gameTime.ElapsedGameTime.TotalSeconds * layer.PlaybackSpeed;
+        if (layer.Time >= layer.Animation.Value.DurationInSeconds)
         {
-            if (state.IsLooping)
+            if (layer.IsLooping)
             {
-                state.Time %= state.Animation.Value.DurationInSeconds;
+                layer.Time %= layer.Animation.Value.DurationInSeconds;
             }
             else
             {
-                state.Animation = null;
+                layer.Animation = null;
                 return;
             }
         }
-        else if (state.Time < 0)
+        else if (layer.Time < 0)
         {
-            if (state.IsLooping)
+            if (layer.IsLooping)
             {
-                state.Time = state.Animation.Value.DurationInSeconds + (state.Time % state.Animation.Value.DurationInSeconds);
+                layer.Time = layer.Animation.Value.DurationInSeconds + (layer.Time % layer.Animation.Value.DurationInSeconds);
             }
             else
             {
-                state.Animation = null;
+                layer.Animation = null;
                 return;
             }
         }
 
         // Update the transition time if we're transitioning from a previous animation.
-        if (state.TransitionRemainingDuration > 0)
+        if (layer.TransitionRemainingDuration > 0)
         {
-            state.TransitionRemainingDuration -= (float)gameTime.ElapsedGameTime.TotalSeconds;
-            if (state.TransitionRemainingDuration < 0)
+            layer.TransitionRemainingDuration -= (float)gameTime.ElapsedGameTime.TotalSeconds;
+            if (layer.TransitionRemainingDuration < 0)
             {
-                state.TransitionTotalDuration = 0;
-                state.TransitionRemainingDuration = 0;
-                state.TransitionAnimation = null;
+                layer.TransitionTotalDuration = 0;
+                layer.TransitionRemainingDuration = 0;
+                layer.TransitionAnimation = null;
             }
         }
     }
 
-    public void SetBoneTransform(Bone bone, out Matrix outMatrix)
+    private void SetLayerBoneTransform(ref AnimationLayer layer, Bone bone, ref Matrix outMatrix)
     {
-        if (!state.Animation.HasValue)
+        if (!layer.Animation.HasValue)
         {
-            outMatrix = bone.LocalTransform;
             return;
         }
 
         // TODO: make this a predetermined mapping?
         var boneIndex = 0;
-        while (state.Animation.Value.BoneChannels[boneIndex].BoneName != bone.Name)
+        while (layer.Animation.Value.BoneChannels[boneIndex].BoneName != bone.Name)
         {
             ++boneIndex;
         }
 
         // If the animation doesn't have a channel for the requested bone, set the bone transform to be the bone's
         // unanimated transform by default. Note this doesn't apply the transition, and may look choppy.
-        if (boneIndex == state.Animation.Value.BoneChannels.Count)
+        if (boneIndex == layer.Animation.Value.BoneChannels.Count)
         {
             outMatrix = bone.LocalTransform;
             return;
         }
 
         var translationFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
+            layer.Time,
+            layer.PlaybackSpeed
         );
         var rotationFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+            layer.Time,
+            layer.PlaybackSpeed
         );
         var scaleFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+            layer.Time,
+            layer.PlaybackSpeed
         );
 
         var translation = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+            layer.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
+            layer.Animation.Value.DurationInSeconds,
             translationFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Time,
+            layer.PlaybackSpeed
         );
         var rotation = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+            layer.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+            layer.Animation.Value.DurationInSeconds,
             rotationFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Time,
+            layer.PlaybackSpeed
         );
         var scale = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+            layer.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+            layer.Animation.Value.DurationInSeconds,
             scaleFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            layer.Time,
+            layer.PlaybackSpeed
         );
 
         // If we're transitioning from a previous animation, interpolate between the transition snapshot and the current frame.
-        if (state.TransitionRemainingDuration > 0 && state.TransitionAnimation.HasValue)
+        if (layer.TransitionRemainingDuration > 0 && layer.TransitionAnimation.HasValue)
         {
             // TODO: make this a predetermined mapping?
             var transitionBoneIndex = 0;
-            while (state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].BoneName != bone.Name)
+            while (layer.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].BoneName != bone.Name)
             {
                 ++transitionBoneIndex;
             }
 
-            if (transitionBoneIndex < state.TransitionAnimation.Value.BoneChannels.Count)
+            if (transitionBoneIndex < layer.TransitionAnimation.Value.BoneChannels.Count)
             {
                 var transitionTranslationFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
                 var transitionRotationFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Rotations.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Rotations.Keyframes,
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
                 var transitionScaleFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Scales.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Scales.Keyframes,
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
 
                 var transitionTranslation = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
+                    layer.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
+                    layer.TransitionAnimation.Value.DurationInSeconds,
                     transitionTranslationFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
                 var transitionRotation = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
+                    layer.TransitionAnimation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
+                    layer.TransitionAnimation.Value.DurationInSeconds,
                     transitionRotationFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
                 var transitionScale = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
+                    layer.TransitionAnimation.Value.BoneChannels[boneIndex].Scales.Keyframes,
+                    layer.TransitionAnimation.Value.DurationInSeconds,
                     transitionScaleFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
+                    layer.TransitionTime,
+                    layer.TransitionPlaybackSpeed
                 );
 
-                var transitionProgress = 1 - (state.TransitionRemainingDuration / state.TransitionTotalDuration);
+                var transitionProgress = 1 - (layer.TransitionRemainingDuration / layer.TransitionTotalDuration);
                 translation = Interpolate(transitionTranslation, translation, transitionProgress);
                 rotation = Interpolate(transitionRotation, rotation, transitionProgress);
                 scale = Interpolate(transitionScale, scale, transitionProgress);
@@ -360,21 +391,21 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private static float MeasureTimeDistance(float totalDuration, float firstTime, float secondTime)
         => firstTime <= secondTime ? secondTime - firstTime : totalDuration - firstTime + secondTime;
 
-    private void SnapshotTransitionState(float transitionDuration)
+    private void SnapshotTransitionState(int layer, float transitionDuration)
     {
         // This will look very similar to SetBoneTransform because we're basically snapshotting the currently rendered transforms.
-        if (transitionDuration <= 0 || !state.Animation.HasValue)
+        if (transitionDuration <= 0 || !state.Layers[layer].Animation.HasValue)
         {
-            state.TransitionTotalDuration = 0;
-            state.TransitionRemainingDuration = 0;
-            state.TransitionAnimation = null;
+            state.Layers[layer].TransitionTotalDuration = 0;
+            state.Layers[layer].TransitionRemainingDuration = 0;
+            state.Layers[layer].TransitionAnimation = null;
             return;
         }
 
-        state.TransitionTotalDuration = transitionDuration;
-        state.TransitionRemainingDuration = transitionDuration;
-        state.TransitionAnimation = state.Animation;
-        state.TransitionTime = state.Time;
-        state.TransitionPlaybackSpeed = state.PlaybackSpeed;
+        state.Layers[layer].TransitionTotalDuration = transitionDuration;
+        state.Layers[layer].TransitionRemainingDuration = transitionDuration;
+        state.Layers[layer].TransitionAnimation = state.Layers[layer].Animation;
+        state.Layers[layer].TransitionTime = state.Layers[layer].Time;
+        state.Layers[layer].TransitionPlaybackSpeed = state.Layers[layer].PlaybackSpeed;
     }
 }

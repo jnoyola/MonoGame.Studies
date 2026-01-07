@@ -42,5 +42,8 @@ public class AnimationWriter : ContentTypeWriter<Animation>
                 output.Write(frame.Value);
             }
         }
+
+        // TODO: write and read DefaultLayer.
+        // TODO: write and read animation layers definitions.
     }
 }

@@ -24,3 +24,7 @@ This study includes the following:
 2. Processing and importing GLTF animations
 3. Applying animations to compute bone transforms
 4. Rendering the character with vertex colors and bone transforms
+
+## Future Studies
+
+Control Schemes, UI, Special Effects
