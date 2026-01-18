@@ -1,5 +1,6 @@
 ﻿using MonoGame.Framework.Content.Pipeline.Builder;
 using Study1.Content.Processors;
+using Study1.ContentFramework.Models;
 
 namespace Study1.Content;
 
@@ -36,9 +37,36 @@ public class Builder : ContentBuilder
 
         content.Include("Fonts/Tahoma_14.spritefont");
 
-        content.Include("Models/man.glb", contentProcessor: new GlbModelProcessor { ReverseIndexWinding = true, SrgbColorCorrection = true });
-        content.Include("Models/man_anims.glb", contentProcessor: new GlbAnimationSetProcessor());
+        content.Include(
+            "Models/man.glb",
+            contentProcessor: new GlbModelProcessor { ReverseIndexWinding = true, SrgbColorCorrection = true }
+        );
 
+        content.Include(
+            "Models/man_anims.glb",
+            contentProcessor: new GlbAnimationSetProcessor
+            {
+                Animations =
+                [
+                    new() { Name = "idle", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.Base },
+                    new() { Name = "run_forward", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.Base },
+                    new() { Name = "wave", WrapMode = WrapMode.Once, DefaultLayer = AnimationLayer.UpperBody },
+                    new() { Name = "hand_closed_left", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
+                    new() { Name = "hand_closed_right", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
+                    new() { Name = "head_down", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
+                    new() { Name = "breathe_heavy", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.AdditiveBase },
+                ],
+                AnimationLayerDefinitions =
+                [
+                    new(AnimationLayer.Base),
+                    new(AnimationLayer.UpperBody)
+                    {
+                        BoneMask = new BoneMaskBuilder().AddSubtree("mixamorig:Spine")
+                    },
+                    new(AnimationLayer.AdditiveBase),
+                ],
+            }
+        );
         return content;
     }
 }

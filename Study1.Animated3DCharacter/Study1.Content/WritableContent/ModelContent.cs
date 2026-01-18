@@ -3,7 +3,7 @@ using Study1.ContentFramework.Models;
 namespace Study1.Content.WritableContent;
 
 /// <summary>
-/// An intermediate data structure to store writable pipeline content for <see cref="ContentFramework.Models.Model"/>.
+/// An intermediate data structure to store writable pipeline content for <see cref="Model"/>.
 /// </summary>
 public class WritableModel(IReadOnlyList<WritableMesh> meshes, IReadOnlyList<Bone> bones, AnimationSet? animations)
 {

@@ -7,14 +7,19 @@ namespace Study1.Content.Processors;
 [ContentProcessor(DisplayName = "GLB Animation Set - MonoGame.Studies")]
 public class GlbAnimationSetProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, AnimationSet>
 {
-
-    public IList<AnimationInfo> AnimationInfo { get; set; } = [];
-    public IList<AnimationLayer> AnimationLayers { get; set; } = [];
+    public required IList<AnimationInfo> Animations { get; set; }
+    public required IList<AnimationLayerBuilder> AnimationLayerDefinitions { get; set; }
 
     public override AnimationSet Process(SharpGLTF.Schema2.ModelRoot input, ContentProcessorContext context)
     {
-        var animationLayers = new AnimationLayers(AnimationLayers);
-        var animationInfoDict = AnimationInfo.ToDictionary(a => a.Name, a => a);
+        var boneIndices = BuildBoneIndices(input);
+        var animationInfoDict = Animations.ToDictionary(a => a.Name, a => a);
+
+        var animationLayers = new AnimationLayerDefinitions();
+        for (int i = 0; i < AnimationLayerDefinitions.Count; ++i)
+        {
+            AnimationLayerDefinitions[i].Build(input, boneIndices, animationLayers);
+        }
 
         var rootBones = FindAllRootBones(input);
 
@@ -27,18 +32,41 @@ public class GlbAnimationSetProcessor : ContentProcessor<SharpGLTF.Schema2.Model
                 continue;
             }
 
+            // Construct a consistent ordering of the bones controlled by this animation.
             var bones = new List<SharpGLTF.Schema2.Node>();
+            var boneSet = new HashSet<SharpGLTF.Schema2.Node>();
+            foreach (var channel in animation.Channels)
+            {
+                var bone = channel.TargetNode;
+                if (!boneSet.Contains(bone))
+                {
+                    bones.Add(bone);
+                    boneSet.Add(bone);
+                }
+            }
+
+            // Construct an index from all bones in the animation set to all bones in this animation.
+            var boneIndexMapping = new int[boneIndices.Count];
+            foreach (var (boneName, boneIndex) in boneIndices)
+            {
+                var bone = bones.FirstOrDefault(b => b.Name == boneName);
+                if (bone != null)
+                {
+                    boneIndexMapping[boneIndex] = bones.IndexOf(bone);
+                }
+                else
+                {
+                    boneIndexMapping[boneIndex] = -1;
+                }
+            }
+
+            // Map channels by bone name.
             var translationChannels = new Dictionary<string, SharpGLTF.Schema2.AnimationChannel>();
             var rotationChannels = new Dictionary<string, SharpGLTF.Schema2.AnimationChannel>();
             var scaleChannels = new Dictionary<string, SharpGLTF.Schema2.AnimationChannel>();
             foreach (var channel in animation.Channels)
             {
                 var bone = channel.TargetNode;
-                if (!bones.Contains(bone))
-                {
-                    bones.Add(bone);
-                }
-
                 switch (channel.TargetNodePath)
                 {
                     case SharpGLTF.Schema2.PropertyPath.translation:
@@ -55,6 +83,9 @@ public class GlbAnimationSetProcessor : ContentProcessor<SharpGLTF.Schema2.Model
                 }
             }
 
+            // Get keyframes for all animated bones in order.
+            // TODO (optimize): filter out any channels where values are near zero.
+            //      Many translation and scale channels may only exist due to floating point rounding errors.
             var boneChannels = new List<BoneChannel>();
             foreach (var bone in bones)
             {
@@ -85,60 +116,42 @@ public class GlbAnimationSetProcessor : ContentProcessor<SharpGLTF.Schema2.Model
                 );
             }
 
-            // var expectedTranslationKeyCount = boneChannels[0].Translations.Keyframes.Length;
-            // var expectedRotationKeyCount = boneChannels[0].Rotations.Keyframes.Length;
-            // var expectedScaleKeyCount = boneChannels[0].Scales.Keyframes.Length;
-            // if (
-            //     boneChannels.Any(
-            //         boneChannel =>
-            //             boneChannel.Translations.Keyframes.Length != expectedTranslationKeyCount ||
-            //             boneChannel.Rotations.Keyframes.Length != expectedRotationKeyCount ||
-            //             boneChannel.Scales.Keyframes.Length != expectedScaleKeyCount
-            //     )
-            // )
-            // {
-            //     throw new Exception($"Animation '{animation.Name}' has mismatched keyframe counts for some bones. All bones are expected to have the same number of keyframes (translations: {expectedTranslationKeyCount}, rotations: {expectedRotationKeyCount}, scales: {expectedScaleKeyCount}).");
-            // }
-
-            // foreach (var boneChannel in boneChannels)
-            // {
-            //     for (int keyIndex = 0; keyIndex < boneChannel.Translations.Keyframes.Length; ++keyIndex)
-            //     {
-            //         if (boneChannel.Translations.Keyframes[keyIndex].Time != boneChannels[0].Translations.Keyframes[keyIndex].Time)
-            //         {
-            //             throw new Exception($"Animation '{animation.Name}' has mismatched translation keyframe times for bone '{boneChannel.BoneName}' at key index {keyIndex}. All bones are expected to have keyframes at the same times.");
-            //         }
-            //     }
-            //     for (int keyIndex = 0; keyIndex < boneChannel.Rotations.Keyframes.Length; ++keyIndex)
-            //     {
-            //         if (boneChannel.Rotations.Keyframes[keyIndex].Time != boneChannels[0].Rotations.Keyframes[keyIndex].Time)
-            //         {
-            //             throw new Exception($"Animation '{animation.Name}' has mismatched rotation keyframe times for bone '{boneChannel.BoneName}' at key index {keyIndex}. All bones are expected to have keyframes at the same times.");
-            //         }
-            //     }
-            //     for (int keyIndex = 0; keyIndex < boneChannel.Scales.Keyframes.Length; ++keyIndex)
-            //     {
-            //         if (boneChannel.Scales.Keyframes[keyIndex].Time != boneChannels[0].Scales.Keyframes[keyIndex].Time)
-            //         {
-            //             throw new Exception($"Animation '{animation.Name}' has mismatched scale keyframe times for bone '{boneChannel.BoneName}' at key index {keyIndex}. All bones are expected to have keyframes at the same times.");
-            //         }
-            //     }
-            // }
-
             if (!animationLayers.HasLayer(animationInfo.DefaultLayer))
             {
-                throw new Exception($"Animation '{animation.Name}' specifies default layer '{animationInfo.DefaultLayer}' which is not present in the provided AnimationLayers ({string.Join(", ", AnimationLayers.Select(l => l.Identifier))}.");
+                throw new Exception($"Animation '{animation.Name}' specifies default layer '{animationInfo.DefaultLayer}' which is not present in the provided AnimationLayerDefinitions ({string.Join(", ", AnimationLayerDefinitions.Select(l => l.Identifier))}.");
             }
 
-            animationDict[animation.Name] = new Animation(
-                animation.Name,
-                animation.Duration,
-                boneChannels,
-                animationInfo.DefaultLayer
-            );
+            animationDict[animation.Name] = new Animation
+            {
+                Name = animation.Name,
+                DurationInSeconds = animation.Duration,
+                WrapMode = animationInfo.WrapMode,
+                BoneIndexMapping = boneIndexMapping,
+                BoneChannels = boneChannels,
+                DefaultLayer = animationInfo.DefaultLayer,
+            };
         }
 
-        return new AnimationSet(animationDict);
+        return new AnimationSet(boneIndices, animationDict, animationLayers);
+    }
+
+    private static Dictionary<string, int> BuildBoneIndices(SharpGLTF.Schema2.ModelRoot input)
+    {
+        var boneIndices = new Dictionary<string, int>();
+        foreach (var skin in input.LogicalSkins)
+        {
+            foreach (var node in skin.Joints)
+            {
+                if (boneIndices.ContainsKey(node.Name))
+                {
+                    throw new Exception($"Duplicate bone name detected: {node.Name}");
+                }
+
+                boneIndices[node.Name] = boneIndices.Count;
+            }
+        }
+
+        return boneIndices;
     }
 
     private static HashSet<SharpGLTF.Schema2.Node> FindAllRootBones(SharpGLTF.Schema2.ModelRoot input)
