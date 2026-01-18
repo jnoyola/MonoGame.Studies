@@ -27,6 +27,16 @@ This study includes the following:
 
 ### Stage 1.2: Blended Animations
 
+This stage adds a lot of complexity to the animation definitions, animation player, and state.
+We are no longer limited to playing a single animation on the character's entire skeleton, but can now
+blend animations across different parts of the skeleton. Layers are designed to be defined for a game's
+specific needs, but are demonstrated here with 2 override layers (base and upper body) and one additive
+layer (which can stack multiple fine adjustments).
+
+This study includes the following:
+1. Content structures for animation metadata, layer definitions, and bone masks
+2. Sampling and blending multiple override and additive layers
+3. Five new animations to demonstrate the various types of blending
 
 ## Future Studies
 
