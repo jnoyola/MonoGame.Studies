@@ -11,9 +11,11 @@ public class Game : Microsoft.Xna.Framework.Game
 {
     private readonly GraphicsDeviceManager _graphics;
 
+    private HeadsUpDisplay _hud;
+
     private Matrix _cameraProjection;
     
-    private Grid _grid;
+    private Grid? _grid;
 
     private Matrix _characterTransform;
     private Vector3 _characterInstructedVelocity;
@@ -21,6 +23,7 @@ public class Game : Microsoft.Xna.Framework.Game
     private Vector3 _characterHeading;
     private float _characterSpeed;
     private Model? _characterModel;
+    private Matrix[]? _characterBoneTransforms;
     private AnimationPlayer _animationPlayer;
     private Effect? _skinnedEffect;
 
@@ -28,19 +31,16 @@ public class Game : Microsoft.Xna.Framework.Game
     {
         _graphics = new GraphicsDeviceManager(this)
         {
-            PreferredBackBufferWidth = 1920,
-            PreferredBackBufferHeight = 1080,
+            PreferredBackBufferWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width,
+            PreferredBackBufferHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height,
+            SynchronizeWithVerticalRetrace = false,  // Disable vsync because it can force FPS to be limited on some systems.
         };
+        IsFixedTimeStep = false;
         IsMouseVisible = true;
         Content.RootDirectory = "Content";
 
-        _cameraProjection = Matrix.CreatePerspectiveFieldOfView(
-            MathHelper.ToRadians(45),
-            GraphicsDevice.Viewport.AspectRatio,
-            0.1f,
-            100f
-        );
-        _grid = new Grid(GraphicsDevice, 20);
+        _hud = new HeadsUpDisplay("Controls:\nWASD - Move\nEsc - Exit");
+
         _characterTransform = Matrix.Identity;
         _characterHeading = Vector3.UnitZ;
         _characterSpeed = 4f;
@@ -55,7 +55,19 @@ public class Game : Microsoft.Xna.Framework.Game
     {
         ReaderRegistry.Initialize();
 
+        _hud.LoadContent(Content, GraphicsDevice);
+
+        _cameraProjection = Matrix.CreatePerspectiveFieldOfView(
+            MathHelper.ToRadians(45),
+            GraphicsDevice.Viewport.AspectRatio,
+            0.1f,
+            100f
+        );
+
+        _grid = new Grid(GraphicsDevice, 20);
+
         _characterModel = Content.Load<Model>("Models/man");
+        _characterBoneTransforms = new Matrix[_characterModel.Bones.Count];
         var characterAnims = Content.Load<AnimationSet>("Models/man_anims");
         _animationPlayer = new AnimationPlayer(characterAnims);
 
@@ -108,18 +120,22 @@ public class Game : Microsoft.Xna.Framework.Game
     protected override void Draw(GameTime gameTime)
     {
         GraphicsDevice.Clear(Color.SlateGray);
+        GraphicsDevice.BlendState = BlendState.Opaque;
+        GraphicsDevice.DepthStencilState = DepthStencilState.Default;
         
         var cameraTarget = _characterTransform.Translation + new Vector3(0, 1f, 0);
         var cameraPosition = cameraTarget + new Vector3(0, 6, -8);
         var cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
 
-        _grid.Draw(cameraView, _cameraProjection);
+        _grid?.Draw(cameraView, _cameraProjection);
         DrawCharacter(gameTime, cameraView);
+
+        _hud?.Draw(gameTime);
     }
 
     private void DrawCharacter(GameTime gameTime, Matrix cameraView)
     {
-        if (_characterModel == null || _skinnedEffect == null)
+        if (_characterModel == null || _characterBoneTransforms == null || _skinnedEffect == null)
         {
             return;
         }
@@ -129,34 +145,33 @@ public class Game : Microsoft.Xna.Framework.Game
 
         // Step 1: Initialize the bone transform array with animation transforms.
         _animationPlayer.UpdateTime(gameTime);
-        var boneTransforms = new Matrix[_characterModel.Bones.Count];
         for (int i = 0; i < _characterModel.Bones.Count; ++i)
         {
-            _animationPlayer.SetBoneTransform(_characterModel.Bones[i], out boneTransforms[i]);
+            _animationPlayer.SetBoneTransform(_characterModel.Bones[i], ref _characterBoneTransforms[i]);
         }
 
         // Step 2: Transform each bone transform by the chain of parent bone transforms.
         // Note this works because the bones are required to be in order, where parentIndex < i for all bones.
         // Remember that MonoGame, like most graphics systems, stores transformation matrices as rows instead of columns,
         // which means that matrix multiplication order is reversed from the mathematical representation to apply transforms.
-        for (int i = 0; i < boneTransforms.Length; ++i)
+        for (int i = 0; i < _characterBoneTransforms.Length; ++i)
         {
             var parentIndex = _characterModel.Bones[i].ParentIndex;
             if (parentIndex >= 0)
             {
-                boneTransforms[i] *= boneTransforms[parentIndex];
+                _characterBoneTransforms[i] *= _characterBoneTransforms[parentIndex];
             }
         }
 
         // Step 3: Layer on an additional transformation to convert from local coordinate space to model coordinate space
         // using the inverse bind matrix.
-        for (int i = 0; i < boneTransforms.Length; ++i)
+        for (int i = 0; i < _characterBoneTransforms.Length; ++i)
         {
-            boneTransforms[i] = _characterModel.Bones[i].InverseBindMatrix * boneTransforms[i];
+            _characterBoneTransforms[i] = _characterModel.Bones[i].InverseBindMatrix * _characterBoneTransforms[i];
         }
 
         // Now draw all components of the model.
-        _skinnedEffect.Parameters["Bones"].SetValue(boneTransforms);
+        _skinnedEffect.Parameters["Bones"].SetValue(_characterBoneTransforms);
         _skinnedEffect.Parameters["World"].SetValue(_characterTransform);
         _skinnedEffect.Parameters["WorldInverseTranspose"].SetValue(Matrix.Transpose(Matrix.Invert(_characterTransform)));
         _skinnedEffect.Parameters["WorldViewProj"].SetValue(_characterTransform * cameraView * _cameraProjection);
@@ -170,6 +185,7 @@ public class Game : Microsoft.Xna.Framework.Game
             {
                 _skinnedEffect.CurrentTechnique.Passes[effectPassIndex].Apply();
                 GraphicsDevice.DrawIndexedPrimitives(PrimitiveType.TriangleList, 0, 0, mesh.PrimitiveCount);
+                _hud.CountPolygons(mesh.PrimitiveCount);
             }
         }
     }

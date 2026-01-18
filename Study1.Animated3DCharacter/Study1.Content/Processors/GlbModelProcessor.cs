@@ -29,6 +29,11 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
     public ColoringStyleOption ColoringStyle { get; set; } = ColoringStyleOption.VertexColors;
 
     /// <summary>
+    /// Whether to apply sRGB color correction. Blender uses sRGB by default, so this is often required to make colors match Blender.
+    /// </summary>
+    public bool SrgbColorCorrection { get; set; } = false;
+
+    /// <summary>
     /// Whether to include animations from this GLB file. If not set, the model is expected to be animated from a separate GLB file containing animations.
     /// </summary>
     public bool IncludeAnimations { get; set; } = false;
@@ -47,8 +52,8 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
 
                 var vertexBuffer = ColoringStyle switch
                 {
-                    ColoringStyleOption.VertexColors => CreateColoredVertexBuffer(primitive),
-                    ColoringStyleOption.Texture => CreateTexturedVertexBuffer(primitive),
+                    ColoringStyleOption.VertexColors => CreateColoredVertexBuffer(primitive, SrgbColorCorrection),
+                    ColoringStyleOption.Texture => CreateTexturedVertexBuffer(primitive, SrgbColorCorrection),
                     _ => throw new NotImplementedException(),
                 };
 
@@ -118,7 +123,7 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
         return new WritableModel(meshes, bones, animations);
     }
 
-    private static VertexBufferContent CreateColoredVertexBuffer(SharpGLTF.Schema2.MeshPrimitive primitive)
+    private static VertexBufferContent CreateColoredVertexBuffer(SharpGLTF.Schema2.MeshPrimitive primitive, bool srgbColorCorrection)
     {
         var vertexPositions = primitive.GetVertices("POSITION").AsVector3Array();
         var vertexNormals = primitive.GetVertices("NORMAL").AsVector3Array();
@@ -128,11 +133,19 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
         var vertices = new SkinnedColoredVertexData[vertexPositions.Count];
         for (int vertexIndex = 0; vertexIndex < vertices.Length; ++vertexIndex)
         {
+            var color = vertexColors[vertexIndex];
+            if (srgbColorCorrection)
+            {
+                color.X = ApplySrgbCorrection(color.X);
+                color.Y = ApplySrgbCorrection(color.Y);
+                color.Z = ApplySrgbCorrection(color.Z);
+            }
+
             vertices[vertexIndex] = new SkinnedColoredVertexData
             {
                 Position = vertexPositions[vertexIndex],
                 Normal = vertexNormals[vertexIndex],
-                Color = new Byte4(vertexColors[vertexIndex] * 255),
+                Color = new Byte4(color * 255),
                 BoneIndices = new Byte4(vertexJoints[vertexIndex]),
                 BoneWeights = vertexWeights[vertexIndex],
             };
@@ -141,8 +154,13 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
         return CreateVertexBuffer(SkinnedColoredVertexData.VertexDeclaration, vertices);
     }
 
-    private static VertexBufferContent CreateTexturedVertexBuffer(SharpGLTF.Schema2.MeshPrimitive primitive)
+    private static VertexBufferContent CreateTexturedVertexBuffer(SharpGLTF.Schema2.MeshPrimitive primitive, bool srgbColorCorrection)
     {
+        if (srgbColorCorrection)
+        {
+            throw new NotImplementedException("sRGB color correction for textured models is not implemented.");
+        }
+
         var vertexPositions = primitive.GetVertices("POSITION").AsVector3Array();
         var vertexNormals = primitive.GetVertices("NORMAL").AsVector3Array();
         var vertexTexCoords = primitive.GetVertices("TEXCOORD_0").AsVector2Array();
@@ -175,5 +193,14 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
         }
         vertexBuffer.Write(0, vertexDeclaration.VertexStride, vertices);
         return vertexBuffer;
+    }
+
+    private static float ApplySrgbCorrection(float colorValue)
+    {
+        // sRGB Gamma correction: https://stackoverflow.com/a/61138576
+        // Same as what blender uses: https://blender.stackexchange.com/a/311654
+        return colorValue <= 0.0031308f
+            ? colorValue * 12.92f
+            : (float)(Math.Pow(colorValue, 1.0/2.4) * 1.055 - 0.055);
     }
 }
