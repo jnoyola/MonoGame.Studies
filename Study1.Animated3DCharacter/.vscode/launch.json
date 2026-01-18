@@ -5,16 +5,16 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Study1.Content",
-      "type": "dotnet",
-      "request": "launch",
-      "projectPath": "${workspaceFolder}/Study1.Content/Study1.Content.csproj"
-    },
-    {
       "name": "Study1.Game.DesktopGL",
       "type": "dotnet",
       "request": "launch",
       "projectPath": "${workspaceFolder}/Study1.Game.DesktopGL/Study1.Game.DesktopGL.csproj"
+    },
+    {
+      "name": "Study1.Content",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/Study1.Content/Study1.Content.csproj"
     }
   ],
 }
