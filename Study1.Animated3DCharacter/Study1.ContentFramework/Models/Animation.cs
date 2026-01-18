@@ -2,10 +2,20 @@ using System.Diagnostics;
 
 namespace Study1.ContentFramework.Models;
 
-[DebuggerDisplay("{Name} ({ChannelCount} channels, {DurationInSeconds} seconds)")]
-public readonly struct Animation(string name, float durationInSeconds, IReadOnlyList<BoneChannel> boneChannels)
+public enum WrapMode
 {
-    public string Name => name;
-    public float DurationInSeconds => durationInSeconds;
-    public IReadOnlyList<BoneChannel> BoneChannels => boneChannels;
+    Once,
+    Loop,
+    Clamp,
+}
+
+[DebuggerDisplay("{Name} ({BoneChannels.Count} channels, {DurationInSeconds} seconds)")]
+public class Animation
+{
+    public required string Name { get; init; }
+    public required float DurationInSeconds { get; init; }
+    public required WrapMode WrapMode { get; init; }
+    public required IReadOnlyList<int> BoneIndexMapping { get; init; }
+    public required IReadOnlyList<BoneChannel> BoneChannels { get; init; }
+    public required AnimationLayer DefaultLayer { get; init; }  // TODO: remove DefaultLayer
 }

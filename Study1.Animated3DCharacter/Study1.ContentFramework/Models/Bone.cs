@@ -1,11 +1,12 @@
 using Microsoft.Xna.Framework;
+using Study1.ContentFramework.Math;
 
 namespace Study1.ContentFramework.Models;
 
-public class Bone(string name, int parentIndex, Matrix localTransform, Matrix inverseBindMatrix)
+public struct Bone
 {
-    public string Name => name;
-    public int ParentIndex => parentIndex;
-    public Matrix LocalTransform => localTransform;
-    public Matrix InverseBindMatrix => inverseBindMatrix;
+    public required string Name;
+    public required int ParentIndex;
+    public required Transform LocalTransform;
+    public required Matrix InverseBindMatrix;
 }

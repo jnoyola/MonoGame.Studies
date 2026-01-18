@@ -15,6 +15,13 @@ public class AnimationWriter : ContentTypeWriter<Animation>
     {
         output.Write(value.Name);
         output.Write(value.DurationInSeconds);
+        output.Write((uint)value.WrapMode);
+
+        output.Write((uint)value.BoneIndexMapping.Count);
+        foreach (var boneIndex in value.BoneIndexMapping)
+        {
+            output.Write(boneIndex);
+        }
 
         output.Write((uint)value.BoneChannels.Count);
         foreach (var channel in value.BoneChannels)
@@ -42,5 +49,7 @@ public class AnimationWriter : ContentTypeWriter<Animation>
                 output.Write(frame.Value);
             }
         }
+
+        output.Write((uint)value.DefaultLayer);
     }
 }

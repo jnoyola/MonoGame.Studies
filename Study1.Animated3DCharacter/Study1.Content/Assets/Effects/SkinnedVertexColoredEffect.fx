@@ -159,22 +159,13 @@ VSOutput VSSkinnedVertexLighting(VSInput vin)
     return vout;
 }
 
-// TODO: move this to content processor
-// sRGB Gamma correction: https://stackoverflow.com/a/61138576
-// Same as what blender uses: https://blender.stackexchange.com/a/311654
-float RgbToSrgb (float theLinearValue) {
-  return theLinearValue <= 0.0031308f
-       ? theLinearValue * 12.92f
-       : pow(theLinearValue, 1.0f/2.4f) * 1.055f - 0.055f;
-}
-
 float4 PSSkinnedVertexLighting(VSOutput pin) : SV_Target0
 {
     float4 color = pin.Diffuse;
     AddSpecular(color, pin.Specular.rgb);
     ApplyFog(color, pin.Specular.w);
     
-    return float4(RgbToSrgb(color.x), RgbToSrgb(color.y), RgbToSrgb(color.z), color.w);
+    return color;
 }
 
 TECHNIQUE(SkinnedEffect_VertexLighting,	VSSkinnedVertexLighting, PSSkinnedVertexLighting);
