@@ -25,6 +25,9 @@ This study includes the following:
 3. Applying animations to compute bone transforms
 4. Rendering the character with vertex colors and bone transforms
 
+### Stage 1.2: Blended Animations
+
+
 ## Future Studies
 
 Control Schemes, UI, Special Effects
