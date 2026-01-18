@@ -27,6 +27,13 @@ public class Game : Microsoft.Xna.Framework.Game
     private AnimationPlayer _animationPlayer;
     private Effect? _skinnedEffect;
 
+    KeyboardState _prevKeyboardState;
+    bool _isWaving;
+    bool _isLeftHandClosed;
+    bool _isRightHandClosed;
+    bool _isHeadDown;
+    bool _isBreathingHeavy;
+
     public Game()
     {
         _graphics = new GraphicsDeviceManager(this)
@@ -34,12 +41,13 @@ public class Game : Microsoft.Xna.Framework.Game
             PreferredBackBufferWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width,
             PreferredBackBufferHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height,
             SynchronizeWithVerticalRetrace = false,  // Disable vsync because it can force FPS to be limited on some systems.
+            IsFullScreen = true,
         };
         IsFixedTimeStep = false;
         IsMouseVisible = true;
         Content.RootDirectory = "Content";
 
-        _hud = new HeadsUpDisplay("Controls:\nWASD - Move\nEsc - Exit");
+        _hud = new HeadsUpDisplay("Controls:\nWASD - Move\nF - Wave\nQE - Open/Close hands\nR - Raise/Lower head\nT - Toggle heavy breathing\nEsc - Exit");
 
         _characterTransform = Matrix.Identity;
         _characterHeading = Vector3.UnitZ;
@@ -49,6 +57,7 @@ public class Game : Microsoft.Xna.Framework.Game
     protected override void Initialize()
     {
         base.Initialize();
+        _prevKeyboardState = Keyboard.GetState();
     }
 
     protected override void LoadContent()
@@ -111,10 +120,30 @@ public class Game : Microsoft.Xna.Framework.Game
             _characterInstructedVelocity *= _characterSpeed * (float)gameTime.ElapsedGameTime.TotalSeconds;
         }
 
+        _isWaving = keyboardState.IsKeyDown(Keys.F);
+        if (keyboardState.IsKeyDown(Keys.Q) && !_prevKeyboardState.IsKeyDown(Keys.Q))
+        {
+            _isLeftHandClosed = !_isLeftHandClosed;
+        }
+        if (keyboardState.IsKeyDown(Keys.E) && !_prevKeyboardState.IsKeyDown(Keys.E))
+        {
+            _isRightHandClosed = !_isRightHandClosed;
+        }
+        if (keyboardState.IsKeyDown(Keys.R) && !_prevKeyboardState.IsKeyDown(Keys.R))
+        {
+            _isHeadDown = !_isHeadDown;
+        }
+        if (keyboardState.IsKeyDown(Keys.T) && !_prevKeyboardState.IsKeyDown(Keys.T))
+        {
+            _isBreathingHeavy = !_isBreathingHeavy;
+        }
+
         // Apply physics.
         _characterTransform = Matrix.CreateWorld(_characterTransform.Translation, -_characterHeading, Vector3.Up);
         _characterVelocity = _characterInstructedVelocity;
         _characterTransform.Translation += _characterVelocity;
+
+        _prevKeyboardState = keyboardState;
     }
 
     protected override void Draw(GameTime gameTime)
@@ -141,13 +170,13 @@ public class Game : Microsoft.Xna.Framework.Game
         }
 
         // Select the correct animation.
-        SelectAnimation();
+        SelectAnimations();
 
         // Step 1: Initialize the bone transform array with animation transforms.
         _animationPlayer.UpdateTime(gameTime);
         for (int i = 0; i < _characterModel.Bones.Count; ++i)
         {
-            _animationPlayer.SetBoneTransform(_characterModel.Bones[i], ref _characterBoneTransforms[i]);
+            _animationPlayer.SampleBone(_characterModel.Bones[i], out _characterBoneTransforms[i]);
         }
 
         // Step 2: Transform each bone transform by the chain of parent bone transforms.
@@ -190,15 +219,43 @@ public class Game : Microsoft.Xna.Framework.Game
         }
     }
 
-    private void SelectAnimation()
+    private void SelectAnimations()
     {
         if (_characterInstructedVelocity == Vector3.Zero)
         {
-            _animationPlayer.Play("idle", loop: true);
+            _animationPlayer.Play(AnimationLayer.Base, "idle");
         }
         else
         {
-            _animationPlayer.Play("run_forward", _characterSpeed / 3, loop: true);
+            _animationPlayer.Play(AnimationLayer.Base, "run_forward", playbackSpeed: _characterSpeed / 3);
+        }
+
+        if (_isWaving)
+        {
+            // This plays on a separate layer, and can be performed while idle or while running.
+            _animationPlayer.Play(AnimationLayer.UpperBody, "wave", transitionDuration: 0.5f);
+        }
+
+        // These are all played on the additive layer, and therefore can stack up to the 3 slot capacity.
+        if (_isLeftHandClosed)
+        {
+            _animationPlayer.Play(AnimationLayer.AdditiveBase, "hand_closed_left");
+        }
+        if (_isRightHandClosed)
+        {
+            _animationPlayer.Play(AnimationLayer.AdditiveBase, "hand_closed_right");
+        }
+        if (_isHeadDown)
+        {
+            _animationPlayer.Play(AnimationLayer.AdditiveBase, "head_down", transitionDuration: 0.5f);
+        }
+        if (_isBreathingHeavy)
+        {
+            // Since this additive animation is 4th in priority, and the additive layer is configured to have 3 slots,
+            // this will get preempted if the other 3 additive animations are all being played. Notice that you always
+            // see smooth fades when turning on and off additive animations, *unless* you have this one on and then
+            // switch to having the other 3 higher priority animations on.
+            _animationPlayer.Play(AnimationLayer.AdditiveBase, "breathe_heavy");
         }
     }
 }

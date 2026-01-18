@@ -1,10 +1,17 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Xna.Framework;
+using Study1.ContentFramework.Math;
 using Study1.ContentFramework.Models;
 
 namespace Study1.Game;
 
 public struct AnimationPlayer(AnimationSet animationSet)
 {
+    private const float DefaultTransitionDuration = 0.15f;
+    private const float DefaultFadeDuration = 0.15f;
+    private static readonly Vector3 Vector3One = Vector3.One;
+    private static readonly Quaternion QuaternionIdentity = Quaternion.Identity;
+
     private struct AnimationChannelState
     {
         public ushort TranslationFrameIndex { get; set; }
@@ -22,214 +29,604 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private readonly AnimationSet animationSet = animationSet;
     private AnimationState state;
 
-    public void Restart(string animation, float playbackSpeed = 1.0f, bool loop = false)
+    public void Play(
+        AnimationLayer layer,
+        string animation,
+        float weight = 1.0f,
+        float playbackSpeed = 1.0f,
+        float transitionDuration = DefaultTransitionDuration)
     {
-        state.Animation = animationSet.Get(animation);
-        state.Time = 0;
-        state.PlaybackSpeed = playbackSpeed;
-        state.IsLooping = loop;
+        if (animationSet.AnimationLayerDefinitions.IsAdditiveLayer(layer))
+        {
+            PlayAdditive(layer, animation, weight, playbackSpeed, transitionDuration);
+        }
+        else
+        {
+            PlayOverride(layer, animation, weight, playbackSpeed, transitionDuration);
+        }
     }
 
-    public void Play(string animation, float playbackSpeed = 1.0f, bool loop = false, float transitionDuration = 0.15f)
+    public void Stop(AnimationLayer? layer = null, float fadeDuration = DefaultFadeDuration)
     {
-        if (state.Animation.HasValue)
+        if (layer.HasValue)
         {
-            if (state.Animation.Value.Name == animation)
+            if (animationSet.AnimationLayerDefinitions.IsAdditiveLayer(layer.Value))
             {
-                // It's the same animation. Update the playback settings.
-                state.PlaybackSpeed = playbackSpeed;
-                state.IsLooping = loop;
-                return;
+                // TODO: stop additive layer
             }
             else
             {
-                // It's a new animation, but we already had one playing. Transition from the previous one.
-                SnapshotTransitionState(transitionDuration);
+                var layerIndex = animationSet.AnimationLayerDefinitions.GetLayerIndex(layer.Value);
+                StopOverrideLayer(ref state.OverrideLayers[layerIndex], fadeDuration);
             }
         }
+        else
+        {
+            for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxOverrideLayerCount; ++layerIndex)
+            {
+                StopOverrideLayer(ref state.OverrideLayers[layerIndex], fadeDuration);
+            }
 
-        Restart(animation, playbackSpeed, loop);
-    }
-
-    public void Stop()
-    {
-        state.Animation = null;
+            // TODO: stop all additive layers
+        }
     }
 
     public void UpdateTime(GameTime gameTime)
     {
-        if (!state.Animation.HasValue)
-        {
-            return;
-        }
+        ResolveAdditiveClips();
 
-        state.Time += (float)gameTime.ElapsedGameTime.TotalSeconds * state.PlaybackSpeed;
-        if (state.Time >= state.Animation.Value.DurationInSeconds)
+        var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+        for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxOverrideLayerCount; ++layerIndex)
         {
-            if (state.IsLooping)
-            {
-                state.Time %= state.Animation.Value.DurationInSeconds;
-            }
-            else
-            {
-                state.Animation = null;
-                return;
-            }
+            UpdateOverrideLayerTime(ref state.OverrideLayers[layerIndex], dt);
         }
-        else if (state.Time < 0)
+        for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxAdditiveLayerCount; ++layerIndex)
         {
-            if (state.IsLooping)
+            for (int clipIndex = 0; clipIndex < AdditiveLayerState.MaxAdditiveClipCount; ++clipIndex)
             {
-                state.Time = state.Animation.Value.DurationInSeconds + (state.Time % state.Animation.Value.DurationInSeconds);
-            }
-            else
-            {
-                state.Animation = null;
-                return;
-            }
-        }
-
-        // Update the transition time if we're transitioning from a previous animation.
-        if (state.TransitionRemainingDuration > 0)
-        {
-            state.TransitionRemainingDuration -= (float)gameTime.ElapsedGameTime.TotalSeconds;
-            if (state.TransitionRemainingDuration < 0)
-            {
-                state.TransitionTotalDuration = 0;
-                state.TransitionRemainingDuration = 0;
-                state.TransitionAnimation = null;
+                ref var clipState = ref state.AdditiveLayers[layerIndex].Clips[clipIndex];
+                UpdateAdditiveClipTime(ref clipState, dt);
             }
         }
     }
 
-    public void SetBoneTransform(Bone bone, out Matrix outMatrix)
+    public void SampleBone(Bone bone, out Matrix result)
     {
-        if (!state.Animation.HasValue)
+        // Check if this bone from the model exists in the animation set.
+        var isBoneInAnimationSet = animationSet.TryGetBoneIndex(bone.Name, out var boneIndex);
+        if (!isBoneInAnimationSet)
         {
-            outMatrix = bone.LocalTransform;
+            bone.LocalTransform.ToMatrix(out result);
+            return;
+        }
+        
+        Transform boneTransform = new();
+        Transform tempTransform = new();
+
+        // Step 1: Sample and combine override layers.
+        if (!SampleOverrideLayers(0, boneIndex, in bone.LocalTransform, ref boneTransform))
+        {
+            boneTransform = bone.LocalTransform;
+        }
+        for (int layerIndex = 1; layerIndex < animationSet.AnimationLayerDefinitions.OverrideLayerCount; ++layerIndex)
+        {
+            if (SampleOverrideLayers(layerIndex, boneIndex, in bone.LocalTransform, ref tempTransform))
+            {
+                Interpolate(in boneTransform, in tempTransform, state.OverrideLayers[layerIndex].Weight, out boneTransform);
+            }
+        }
+
+        // Step 2: Sample and accumulate additive layers.
+        tempTransform = Transform.Identity;
+        for (int layerIndex = 0; layerIndex < animationSet.AnimationLayerDefinitions.AdditiveLayerCount; ++layerIndex)
+        {
+            if (SampleAdditiveLayers(layerIndex, boneIndex, ref bone.LocalTransform, ref tempTransform))
+            {
+                ApplyAdditive(ref boneTransform, ref tempTransform);
+            }
+        }
+
+        boneTransform.ToMatrix(out result);
+    }
+
+    private void PlayOverride(
+        AnimationLayer layer,
+        string animation,
+        float weight,
+        float playbackSpeed,
+        float transitionDuration)
+    {
+        var resolvedAnimation = animationSet.GetAnimation(animation);
+        var layerIndex = animationSet.AnimationLayerDefinitions.GetLayerIndex(layer);
+        ref var layerState = ref state.OverrideLayers[layerIndex];
+        if (resolvedAnimation != layerState.Animation)
+        {
+            // It's a new animation, but we already had one playing. Transition from the previous one.
+            SnapshotTransitionState(layerIndex, transitionDuration);
+
+            // Then start the new animation.
+            layerState.Animation = animationSet.GetAnimation(animation);
+            layerState.Time = 0;
+        }
+
+        // Update the playback settings, and fade it in.
+        layerState.PlaybackSpeed = playbackSpeed;
+        if (transitionDuration == 0)
+        {
+            layerState.Weight = weight;
+            layerState.TargetWeight = weight;
+            layerState.WeightVelocity = 0;
+        }
+        else
+        {
+            layerState.TargetWeight = weight;
+            layerState.WeightVelocity = (layerState.TargetWeight - layerState.Weight) / transitionDuration;
+        }
+    }
+
+    private void PlayAdditive(
+        AnimationLayer layer,
+        string animation,
+        float weight,
+        float playbackSpeed,
+        float fadeDuration)
+    {
+        var layerIndex = animationSet.AnimationLayerDefinitions.GetLayerIndex(layer);
+        ref var layerState = ref state.AdditiveLayers[layerIndex];
+        if (layerState.RequestedClipIndex >= AdditiveLayerState.MaxAdditiveClipCount)
+        {
+            // We're already at max additive clip capacity for this layer for this frame.
             return;
         }
 
-        // TODO: make this a predetermined mapping?
-        var boneIndex = 0;
-        while (state.Animation.Value.BoneChannels[boneIndex].BoneName != bone.Name)
+        layerState.RequestedClips[layerState.RequestedClipIndex++] = new AdditiveClipRequest
         {
-            ++boneIndex;
-        }
+            Animation = animationSet.GetAnimation(animation),
+            Weight = weight,
+            PlaybackSpeed = playbackSpeed,
+            FadeDuration = fadeDuration
+        };
+    }
 
-        // If the animation doesn't have a channel for the requested bone, set the bone transform to be the bone's
-        // unanimated transform by default. Note this doesn't apply the transition, and may look choppy.
-        if (boneIndex == state.Animation.Value.BoneChannels.Count)
+    private void StopOverrideLayer(ref OverrideLayerState layerState, float fadeDuration = DefaultFadeDuration)
+    {
+        if (fadeDuration == 0)
         {
-            outMatrix = bone.LocalTransform;
+            layerState.Animation = null;
+            layerState.TransitionAnimation = null;
+            layerState.Weight = 0;
+            layerState.TargetWeight = 0;
+            layerState.WeightVelocity = 0;
+        }
+        else
+        {
+            // Update the weight velocity, but take the minimum (more negative) value so that we don't slow down the fade
+            // in case Stop was called multiple times in a row.
+            layerState.TargetWeight = 0;
+            layerState.WeightVelocity = Math.Min(layerState.WeightVelocity, -layerState.Weight / fadeDuration);
+        }
+    }
+
+    private void StopAdditiveClip(ref AdditiveClipState clipState, float fadeDuration = DefaultFadeDuration)
+    {
+        if (fadeDuration == 0)
+        {
+            clipState.Animation = null;
+            clipState.Weight = 0;
+            clipState.TargetWeight = 0;
+            clipState.WeightVelocity = 0;
+        }
+        else
+        {
+            // Update the weight velocity, but take the minimum (more negative) value so that we don't slow down the fade
+            // in case Stop was called multiple times in a row.
+            clipState.TargetWeight = 0;
+            clipState.WeightVelocity = Math.Min(clipState.WeightVelocity, -clipState.Weight / fadeDuration);
+        }
+    }
+
+    private void ResolveAdditiveClips()
+    {
+        for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxAdditiveLayerCount; ++layerIndex)
+        {
+            ref var layerState = ref state.AdditiveLayers[layerIndex];
+
+            // Find which desired animations are already playing, and which slots are already occupied.
+            var isClipMatched = new AdditiveLayerState.ClipFlags();
+            var isSlotMatched = new AdditiveLayerState.ClipFlags();
+            for (int clipIndex = 0; clipIndex < layerState.RequestedClipIndex; ++clipIndex)
+            {
+                // Perform a small linear scan to search for the requested animation in the current slots.
+                for (int slotIndex = 0; slotIndex < AdditiveLayerState.MaxAdditiveClipCount; ++slotIndex)
+                {
+                    if (layerState.RequestedClips[clipIndex].Animation == layerState.Clips[slotIndex].Animation)
+                    {
+                        isClipMatched[clipIndex] = true;
+                        isSlotMatched[slotIndex] = true;
+                        break;
+                    }
+                }
+            }
+
+            // Find each new pair of desired animation and available slot.
+            for (int clipIndex = 0, slotIndex = 0; clipIndex < layerState.RequestedClipIndex && slotIndex < AdditiveLayerState.MaxAdditiveClipCount;)
+            {
+                if (isClipMatched[clipIndex])
+                {
+                    ++clipIndex;
+                }
+                else if (isSlotMatched[slotIndex])
+                {
+                    ++slotIndex;
+                }
+                else
+                {
+                    // Set the requested clip into the available slot.
+                    ref var clipRequest = ref layerState.RequestedClips[clipIndex];
+                    ref var clipState = ref layerState.Clips[slotIndex];
+                    clipState.Animation = clipRequest.Animation;
+                    clipState.Time = 0;
+                    clipState.PlaybackSpeed = clipRequest.PlaybackSpeed;
+                    if (clipRequest.FadeDuration == 0)
+                    {
+                        clipState.Weight = clipRequest.Weight;
+                        clipState.TargetWeight = clipRequest.Weight;
+                        clipState.WeightVelocity = 0;
+                    }
+                    else
+                    {
+                        clipState.Weight = 0;
+                        clipState.TargetWeight = clipRequest.Weight;
+                        clipState.WeightVelocity = clipRequest.Weight / clipRequest.FadeDuration;
+                    }
+
+                    isSlotMatched[slotIndex] = true;
+                    ++clipIndex;
+                    ++slotIndex;
+                }
+            }
+
+            // Fade out any old animations that are no longer desired and the slot isn't being used for a higher priority animation.
+            for (int slotIndex = 0; slotIndex < AdditiveLayerState.MaxAdditiveClipCount; ++slotIndex)
+            {
+                if (!isSlotMatched[slotIndex] && layerState.Clips[slotIndex].Animation != null)
+                {
+                    StopAdditiveClip(ref layerState.Clips[slotIndex]);
+                }
+            }
+
+            // Reset the request state for next frame.
+            layerState.RequestedClipIndex = 0;
+        }
+    }
+
+    private void UpdateOverrideLayerTime(ref OverrideLayerState layerState, float dt)
+    {
+        if (layerState.Animation == null && layerState.TransitionAnimation == null)
+        {
             return;
         }
 
+        // Update the layer time, as long as we're not fading out this layer's weight.
+        // If the animation ends, then begin to fade it out.
+        var isLayerFading = layerState.TargetWeight == 0 && layerState.WeightVelocity < 0;
+        if (layerState.Animation != null && !isLayerFading)
+        {
+            layerState.Time += dt * layerState.PlaybackSpeed;
+            if (layerState.Time >= layerState.Animation.DurationInSeconds)
+            {
+                switch (layerState.Animation.WrapMode)
+                {
+                    case WrapMode.Once:
+                        layerState.Time = layerState.Animation.DurationInSeconds;
+                        StopOverrideLayer(ref layerState);
+                        break;
+                    case WrapMode.Loop:
+                        layerState.Time %= layerState.Animation.DurationInSeconds;
+                        break;
+                    case WrapMode.Clamp:
+                        layerState.Time = layerState.Animation.DurationInSeconds;
+                        break;
+                }
+            }
+            else if (layerState.Time < 0)
+            {
+                switch (layerState.Animation.WrapMode)
+                {
+                    case WrapMode.Once:
+                        layerState.Time = 0;
+                        StopOverrideLayer(ref layerState);
+                        break;
+                    case WrapMode.Loop:
+                        layerState.Time = layerState.Animation.DurationInSeconds + (layerState.Time % layerState.Animation.DurationInSeconds);
+                        break;
+                    case WrapMode.Clamp:
+                        layerState.Time = 0;
+                        break;
+                }
+            }
+        }
+
+        // Update the layer's weight. Only when the weight reaches zero do we clear the animation.
+        if (layerState.WeightVelocity != 0)
+        {
+            layerState.Weight += dt * layerState.WeightVelocity;
+            if ((layerState.WeightVelocity < 0 && layerState.Weight <= layerState.TargetWeight)
+                || (layerState.WeightVelocity > 0 && layerState.Weight >= layerState.TargetWeight))
+            {
+                if (layerState.TargetWeight == 0)
+                {
+                    layerState.Animation = null;
+                    layerState.TransitionAnimation = null;
+                    layerState.Weight = 0;
+                    layerState.WeightVelocity = 0;
+                }
+                else
+                {
+                    layerState.Weight = layerState.TargetWeight;
+                    layerState.WeightVelocity = 0;
+                }
+            }
+        }
+
+        // Update the transition time if we're transitioning from a previous animation.
+        if (layerState.TransitionRemainingDuration > 0)
+        {
+            layerState.TransitionRemainingDuration -= dt;
+            if (layerState.TransitionRemainingDuration < 0)
+            {
+                layerState.TransitionTotalDuration = 0;
+                layerState.TransitionRemainingDuration = 0;
+                layerState.TransitionAnimation = null;
+            }
+        }
+    }
+
+    private void UpdateAdditiveClipTime(ref AdditiveClipState clipState, float dt)
+    {
+        if (clipState.Animation == null)
+        {
+            return;
+        }
+
+        // Update the clip time, as long as we're not fading out this clip's weight.
+        // If the animation ends, then begin to fade it out.
+        var isLayerFading = clipState.TargetWeight == 0 && clipState.WeightVelocity < 0;
+        if (!isLayerFading)
+        {
+            clipState.Time += dt * clipState.PlaybackSpeed;
+            if (clipState.Time >= clipState.Animation.DurationInSeconds)
+            {
+                switch (clipState.Animation.WrapMode)
+                {
+                    case WrapMode.Once:
+                        clipState.Time = clipState.Animation.DurationInSeconds;
+                        StopAdditiveClip(ref clipState);
+                        break;
+                    case WrapMode.Loop:
+                        clipState.Time %= clipState.Animation.DurationInSeconds;
+                        break;
+                    case WrapMode.Clamp:
+                        clipState.Time = clipState.Animation.DurationInSeconds;
+                        break;
+                }
+            }
+            else if (clipState.Time < 0)
+            {
+                switch (clipState.Animation.WrapMode)
+                {
+                    case WrapMode.Once:
+                        clipState.Time = 0;
+                        StopAdditiveClip(ref clipState);
+                        break;
+                    case WrapMode.Loop:
+                        clipState.Time = clipState.Animation.DurationInSeconds + (clipState.Time % clipState.Animation.DurationInSeconds);
+                        break;
+                    case WrapMode.Clamp:
+                        clipState.Time = 0;
+                        break;
+                }
+            }
+        }
+
+        // Update the clip's weight. Only when the weight reaches zero do we clear the animation.
+        if (clipState.WeightVelocity != 0)
+        {
+            clipState.Weight += dt * clipState.WeightVelocity;
+            if ((clipState.WeightVelocity < 0 && clipState.Weight <= clipState.TargetWeight)
+                || (clipState.WeightVelocity > 0 && clipState.Weight >= clipState.TargetWeight))
+            {
+                if (clipState.TargetWeight == 0)
+                {
+                    clipState.Animation = null;
+                    clipState.Weight = 0;
+                    clipState.WeightVelocity = 0;
+                }
+                else
+                {
+                    clipState.Weight = clipState.TargetWeight;
+                    clipState.WeightVelocity = 0;
+                }
+            }
+        }
+    }
+
+    private bool SampleOverrideLayers(int layerIndex, int boneIndex, in Transform boneLocalTransform, ref Transform outTransform)
+    {
+        ref OverrideLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetOverrideLayer(layerIndex);
+        ref OverrideLayerState layerState = ref state.OverrideLayers[layerIndex];
+
+        if ((layerState.Animation == null && layerState.TransitionAnimation == null)
+            || layerState.Weight == 0
+            || (layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex]))
+        {
+            return false;
+        }
+
+        if (layerState.TransitionAnimation == null)
+        {
+            bool isBoneInCurr = TryGetAnimationBoneIndex(layerState.Animation, boneIndex, out var currAnimBoneIndex);
+            if (!isBoneInCurr)
+            {
+                return false;
+            }
+            
+            SampleAnimation(layerState.Animation!, currAnimBoneIndex, layerState.Time, layerState.PlaybackSpeed, out outTransform);
+            return true;
+        }
+        else
+        {
+            bool isBoneInPrev = TryGetAnimationBoneIndex(layerState.TransitionAnimation, boneIndex, out var prevAnimBoneIndex);
+            bool isBoneInCurr = TryGetAnimationBoneIndex(layerState.Animation, boneIndex, out var currAnimBoneIndex);
+            if (!isBoneInPrev && !isBoneInCurr)
+            {
+                return false;
+            }
+
+            Transform prevTransform, currTransform;
+            if (isBoneInPrev)
+            {
+                SampleAnimation(layerState.TransitionAnimation!, prevAnimBoneIndex, layerState.TransitionTime, layerState.PlaybackSpeed, out prevTransform);
+            }
+            else
+            {
+                prevTransform = boneLocalTransform;
+            }
+            if (isBoneInCurr)
+            {
+                SampleAnimation(layerState.Animation!, currAnimBoneIndex, layerState.Time, layerState.PlaybackSpeed, out currTransform);
+            }
+            else
+            {
+                currTransform = boneLocalTransform;
+            }
+
+            var progress = 1 - (layerState.TransitionRemainingDuration / layerState.TransitionTotalDuration);
+            Interpolate(in prevTransform, in currTransform, progress, out outTransform);
+            return true;
+        }
+    }
+
+    private bool SampleAdditiveLayers(int layerIndex, int boneIndex, ref Transform boneLocalTransform, ref Transform accumulatedTransform)
+    {
+        ref AdditiveLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetAdditiveLayer(layerIndex);
+        ref AdditiveLayerState layerState = ref state.AdditiveLayers[layerIndex];
+
+        if (layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex])
+        {
+            return false;
+        }
+
+        bool isBoneInLayer = false;
+        for (int clipIndex = 0; clipIndex < AdditiveLayerState.MaxAdditiveClipCount; ++clipIndex)
+        {
+            ref AdditiveClipState clipState = ref layerState.Clips[clipIndex];
+            if (clipState.Animation == null || clipState.Weight == 0)
+            {
+                continue;
+            }
+
+            var isBoneInAnim = TryGetAnimationBoneIndex(clipState.Animation, boneIndex, out var animBoneIndex);
+            if (!isBoneInAnim)
+            {
+                continue;
+            }
+
+            SampleAnimation(clipState.Animation, animBoneIndex, clipState.Time, clipState.PlaybackSpeed, out var transform);
+            ComputeAdditiveDelta(ref transform, ref boneLocalTransform, out var delta);
+
+            AccumulateAdditive(ref accumulatedTransform, ref delta, clipState.Weight);
+            isBoneInLayer = true;
+        }
+
+        return isBoneInLayer;
+    }
+
+    private static bool TryGetAnimationBoneIndex([NotNullWhen(true)] Animation? animation, int animationSetBoneIndex, out int animationBoneIndex)
+    {
+        if (animation == null)
+        {
+            animationBoneIndex = 0;
+            return false;
+        }
+
+        animationBoneIndex = animation.BoneIndexMapping[animationSetBoneIndex];
+        return animationBoneIndex != -1;
+    }
+
+    private static void SampleAnimation(Animation animation, int animationBoneIndex, float time, float playbackSpeed, out Transform transform)
+    {
         var translationFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            animation.BoneChannels[animationBoneIndex].Translations.Keyframes,
+            time,
+            playbackSpeed
         );
         var rotationFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            animation.BoneChannels[animationBoneIndex].Rotations.Keyframes,
+            time,
+            playbackSpeed
         );
         var scaleFrameIndex = FindFrameIndex(
-            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-            state.Time,
-            state.PlaybackSpeed
+            animation.BoneChannels[animationBoneIndex].Scales.Keyframes,
+            time,
+            playbackSpeed
         );
 
-        var translation = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Translations.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+        SampleChannel(
+            animation.BoneChannels[animationBoneIndex].Translations.Keyframes,
+            animation.DurationInSeconds,
             translationFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            time,
+            playbackSpeed,
+            out transform.Translation
         );
-        var rotation = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+        SampleChannel(
+            animation.BoneChannels[animationBoneIndex].Rotations.Keyframes,
+            animation.DurationInSeconds,
             rotationFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            time,
+            playbackSpeed,
+            out transform.Rotation
         );
-        var scale = Sample(
-            state.Animation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-            state.Animation.Value.DurationInSeconds,
+        SampleChannel(
+            animation.BoneChannels[animationBoneIndex].Scales.Keyframes,
+            animation.DurationInSeconds,
             scaleFrameIndex,
-            state.Time,
-            state.PlaybackSpeed
+            time,
+            playbackSpeed,
+            out transform.Scale
         );
+    }
 
-        // If we're transitioning from a previous animation, interpolate between the transition snapshot and the current frame.
-        if (state.TransitionRemainingDuration > 0 && state.TransitionAnimation.HasValue)
-        {
-            // TODO: make this a predetermined mapping?
-            var transitionBoneIndex = 0;
-            while (state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].BoneName != bone.Name)
-            {
-                ++transitionBoneIndex;
-            }
+    private static void ComputeAdditiveDelta(ref Transform pose, ref Transform reference, out Transform delta) {
+        Vector3.Subtract(ref pose.Translation, ref reference.Translation, out delta.Translation);
 
-            if (transitionBoneIndex < state.TransitionAnimation.Value.BoneChannels.Count)
-            {
-                var transitionTranslationFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
-                var transitionRotationFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Rotations.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
-                var transitionScaleFrameIndex = FindFrameIndex(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Scales.Keyframes,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
+        Quaternion.Inverse(ref reference.Rotation, out delta.Rotation);
+        Quaternion.Multiply(ref delta.Rotation, ref pose.Rotation, out delta.Rotation);
 
-                var transitionTranslation = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[transitionBoneIndex].Translations.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
-                    transitionTranslationFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
-                var transitionRotation = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Rotations.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
-                    transitionRotationFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
-                var transitionScale = Sample(
-                    state.TransitionAnimation.Value.BoneChannels[boneIndex].Scales.Keyframes,
-                    state.TransitionAnimation.Value.DurationInSeconds,
-                    transitionScaleFrameIndex,
-                    state.TransitionTime,
-                    state.TransitionPlaybackSpeed
-                );
+        Vector3.Divide(ref pose.Scale, ref reference.Scale, out delta.Scale);
+    }
 
-                var transitionProgress = 1 - (state.TransitionRemainingDuration / state.TransitionTotalDuration);
-                translation = Interpolate(transitionTranslation, translation, transitionProgress);
-                rotation = Interpolate(transitionRotation, rotation, transitionProgress);
-                scale = Interpolate(transitionScale, scale, transitionProgress);
-            }
-        }
+    private static void AccumulateAdditive(ref Transform transform, ref Transform delta, float weight) {
+        Vector3.Multiply(ref delta.Translation, weight, out delta.Translation);
+        Vector3.Add(ref transform.Translation, ref delta.Translation, out transform.Translation);
 
-        outMatrix = Matrix.CreateScale(scale) * Matrix.CreateFromQuaternion(rotation);
-        outMatrix.Translation = translation;
+        Interpolate(in QuaternionIdentity, in delta.Rotation, weight, out delta.Rotation);
+        Quaternion.Multiply(ref transform.Rotation, ref delta.Rotation, out transform.Rotation);
+        Quaternion.Normalize(ref transform.Rotation, out transform.Rotation);
 
-        // If the bone is the root bone, premultiply its base transform so that the animation is applied on top of the
-        // model's intended scale, rotation, and translation. Otherwise this would reset every model to match the exact
-        // scale and rotation of the animation file.
-        // if (bone.ParentIndex < 0)
-        // {
-        //     outMatrix = bone.LocalTransform * outMatrix;
-        // }
+        Interpolate(in Vector3One, in delta.Scale, weight, out delta.Scale);
+        Vector3.Multiply(ref transform.Scale, ref delta.Scale, out transform.Scale);
+    }
+
+    private static void ApplyAdditive(ref Transform transform, ref Transform delta)
+    {
+        Vector3.Add(ref transform.Translation, ref delta.Translation, out transform.Translation);
+
+        Quaternion.Multiply(ref transform.Rotation, ref delta.Rotation, out transform.Rotation);
+        Quaternion.Normalize(ref transform.Rotation, out transform.Rotation);
+
+        Vector3.Multiply(ref transform.Scale, ref delta.Scale, out transform.Scale);
     }
 
     private static ushort FindFrameIndex<T>(
@@ -295,86 +692,123 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private static Vector3 Sample(Keyframe<Vector3>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
+    private static void SampleChannel(Keyframe<Vector3>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed, out Vector3 result)
     {
         ref readonly var currKeyframe = ref keyframes[frameIndex];
 
-        if (playbackSpeed > 0)
+        if (totalDuration > 0)
         {
-            var nextFrameIndex = (ushort)(frameIndex + 1 < keyframes.Length ? frameIndex + 1 : 0);
-            ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
-            var progress =
-                MeasureTimeDistance(totalDuration, currKeyframe.Time, currentTime)
-                / MeasureTimeDistance(totalDuration, currKeyframe.Time, nextKeyframe.Time);
-            return Interpolate(currKeyframe.Value, nextKeyframe.Value, progress);
+            if (playbackSpeed > 0)
+            {
+                var nextFrameIndex = (ushort)(frameIndex + 1 < keyframes.Length ? frameIndex + 1 : 0);
+                ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
+                var progress =
+                    MeasureTimeDistance(totalDuration, currKeyframe.Time, currentTime)
+                    / MeasureTimeDistance(totalDuration, currKeyframe.Time, nextKeyframe.Time);
+                Interpolate(in currKeyframe.Value, in nextKeyframe.Value, progress, out result);
+                return;
+            }
+            else if (playbackSpeed < 0)
+            {
+                var nextFrameIndex = (ushort)(frameIndex - 1 >= 0 ? frameIndex - 1 : keyframes.Length - 1);
+                ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
+                var progress =
+                    MeasureTimeDistance(totalDuration, currentTime, currKeyframe.Time)
+                    / MeasureTimeDistance(totalDuration, nextKeyframe.Time, currKeyframe.Time);
+                Interpolate(in currKeyframe.Value, in nextKeyframe.Value, progress, out result);
+                return;
+            }
         }
-        else if (playbackSpeed < 0)
-        {
-            var nextFrameIndex = (ushort)(frameIndex - 1 >= 0 ? frameIndex - 1 : keyframes.Length - 1);
-            ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
-            var progress =
-                MeasureTimeDistance(totalDuration, currentTime, currKeyframe.Time)
-                / MeasureTimeDistance(totalDuration, nextKeyframe.Time, currKeyframe.Time);
-            return Interpolate(currKeyframe.Value, nextKeyframe.Value, progress);
-        }
-        else
-        {
-            return currKeyframe.Value;
-        }
+
+        result = currKeyframe.Value;
     }
 
-    private static Quaternion Sample(Keyframe<Quaternion>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed)
+    private static void SampleChannel(Keyframe<Quaternion>[] keyframes, float totalDuration, ushort frameIndex, float currentTime, float playbackSpeed, out Quaternion result)
     {
         ref readonly var currKeyframe = ref keyframes[frameIndex];
 
-        if (playbackSpeed > 0)
+        if (totalDuration > 0)
         {
-            var nextFrameIndex = (ushort)(frameIndex + 1 < keyframes.Length ? frameIndex + 1 : 0);
-            ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
-            var progress =
-                MeasureTimeDistance(totalDuration, currKeyframe.Time, currentTime)
-                / MeasureTimeDistance(totalDuration, currKeyframe.Time, nextKeyframe.Time);
-            return Interpolate(currKeyframe.Value, nextKeyframe.Value, progress);
+            if (playbackSpeed > 0)
+            {
+                var nextFrameIndex = (ushort)(frameIndex + 1 < keyframes.Length ? frameIndex + 1 : 0);
+                ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
+                var progress =
+                    MeasureTimeDistance(totalDuration, currKeyframe.Time, currentTime)
+                    / MeasureTimeDistance(totalDuration, currKeyframe.Time, nextKeyframe.Time);
+                Interpolate(in currKeyframe.Value, in nextKeyframe.Value, progress, out result);
+                return;
+            }
+            else if (playbackSpeed < 0)
+            {
+                var nextFrameIndex = (ushort)(frameIndex - 1 >= 0 ? frameIndex - 1 : keyframes.Length - 1);
+                ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
+                var progress =
+                    MeasureTimeDistance(totalDuration, currentTime, currKeyframe.Time)
+                    / MeasureTimeDistance(totalDuration, nextKeyframe.Time, currKeyframe.Time);
+                Interpolate(in currKeyframe.Value, in nextKeyframe.Value, progress, out result);
+                return;
+            }
         }
-        else if (playbackSpeed < 0)
+
+        result = currKeyframe.Value;
+    }
+
+    private static void Interpolate(in Transform curr, in Transform next, float progress, out Transform result)
+    {
+        Interpolate(in curr.Translation, in next.Translation, progress, out result.Translation);
+        Interpolate(in curr.Rotation, in next.Rotation, progress, out result.Rotation);
+        Interpolate(in curr.Scale, in next.Scale, progress, out result.Scale);
+    }
+
+    private static void Interpolate(in Vector3 curr, in Vector3 next, float progress, out Vector3 result)
+    {
+        result = curr + (next - curr) * progress;
+    }
+
+    private static void Interpolate(in Quaternion curr, in Quaternion next, float progress, out Quaternion result)
+    {
+        float invProgress = 1f - progress;
+        if (curr.X * next.X + curr.Y * next.Y + curr.Z * next.Z + curr.W * next.W >= 0f)
         {
-            var nextFrameIndex = (ushort)(frameIndex - 1 >= 0 ? frameIndex - 1 : keyframes.Length - 1);
-            ref readonly var nextKeyframe = ref keyframes[nextFrameIndex];
-            var progress =
-                MeasureTimeDistance(totalDuration, currentTime, currKeyframe.Time)
-                / MeasureTimeDistance(totalDuration, nextKeyframe.Time, currKeyframe.Time);
-            return Interpolate(currKeyframe.Value, nextKeyframe.Value, progress);
+            result.X = invProgress * curr.X + progress * next.X;
+            result.Y = invProgress * curr.Y + progress * next.Y;
+            result.Z = invProgress * curr.Z + progress * next.Z;
+            result.W = invProgress * curr.W + progress * next.W;
         }
         else
         {
-            return currKeyframe.Value;
+            result.X = invProgress * curr.X - progress * next.X;
+            result.Y = invProgress * curr.Y - progress * next.Y;
+            result.Z = invProgress * curr.Z - progress * next.Z;
+            result.W = invProgress * curr.W - progress * next.W;
         }
+
+        float scalar = 1f / MathF.Sqrt(result.X * result.X + result.Y * result.Y + result.Z * result.Z + result.W * result.W);
+        result.X *= scalar;
+        result.Y *= scalar;
+        result.Z *= scalar;
+        result.W *= scalar;
     }
-
-    private static Vector3 Interpolate(Vector3 curr, Vector3 next, float progress)
-        => curr + (next - curr) * progress;
-
-    private static Quaternion Interpolate(Quaternion curr, Quaternion next, float progress)
-        => Quaternion.Lerp(curr, next, progress);
 
     private static float MeasureTimeDistance(float totalDuration, float firstTime, float secondTime)
         => firstTime <= secondTime ? secondTime - firstTime : totalDuration - firstTime + secondTime;
 
-    private void SnapshotTransitionState(float transitionDuration)
+    private void SnapshotTransitionState(int layerIndex, float transitionDuration)
     {
-        // This will look very similar to SetBoneTransform because we're basically snapshotting the currently rendered transforms.
-        if (transitionDuration <= 0 || !state.Animation.HasValue)
+        ref var layerState = ref state.OverrideLayers[layerIndex];
+        if (transitionDuration <= 0 || layerState.Animation == null)
         {
-            state.TransitionTotalDuration = 0;
-            state.TransitionRemainingDuration = 0;
-            state.TransitionAnimation = null;
+            layerState.TransitionTotalDuration = 0;
+            layerState.TransitionRemainingDuration = 0;
+            layerState.TransitionAnimation = null;
             return;
         }
 
-        state.TransitionTotalDuration = transitionDuration;
-        state.TransitionRemainingDuration = transitionDuration;
-        state.TransitionAnimation = state.Animation;
-        state.TransitionTime = state.Time;
-        state.TransitionPlaybackSpeed = state.PlaybackSpeed;
+        layerState.TransitionTotalDuration = transitionDuration;
+        layerState.TransitionRemainingDuration = transitionDuration;
+        layerState.TransitionAnimation = layerState.Animation;
+        layerState.TransitionTime = layerState.Time;
+        layerState.TransitionPlaybackSpeed = layerState.PlaybackSpeed;
     }
 }

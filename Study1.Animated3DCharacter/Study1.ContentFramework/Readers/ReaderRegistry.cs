@@ -8,6 +8,7 @@ public static class ReaderRegistry
     {
         AddDefaultInstance<AnimationReader>();
         AddDefaultInstance<AnimationSetReader>();
+        AddDefaultInstance<BitArrayReader>();
         AddDefaultInstance<ModelReader>();
     }
 

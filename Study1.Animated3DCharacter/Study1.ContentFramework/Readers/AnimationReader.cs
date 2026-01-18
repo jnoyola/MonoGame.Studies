@@ -10,6 +10,14 @@ public class AnimationReader : ContentTypeReader<Animation>
     {
         var name = input.ReadString();
         var durationInSeconds = input.ReadSingle();
+        var wrapMode = (WrapMode)input.ReadUInt32();
+
+        var boneCount = input.ReadUInt32();
+        var boneIndexMapping = new int[boneCount];
+        for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex)
+        {
+            boneIndexMapping[boneIndex] = input.ReadInt32();
+        }
 
         var boneChannelCount = input.ReadUInt32();
         var boneChannels = new BoneChannel[boneChannelCount];
@@ -47,6 +55,16 @@ public class AnimationReader : ContentTypeReader<Animation>
             boneChannels[boneChannelIndex] = new BoneChannel(boneName, translationFrames, rotationFrames, scaleFrames);
         }
 
-        return new Animation(name, durationInSeconds, boneChannels);
+        var defaultLayer = (AnimationLayer)input.ReadUInt32();
+
+        return new Animation
+        {
+            Name = name,
+            DurationInSeconds = durationInSeconds,
+            WrapMode = wrapMode,
+            BoneIndexMapping = boneIndexMapping,
+            BoneChannels = boneChannels,
+            DefaultLayer = defaultLayer,
+        };
     }
 }

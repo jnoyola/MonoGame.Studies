@@ -5,6 +5,7 @@ using Microsoft.Xna.Framework.Content.Pipeline.Processors;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Graphics.PackedVector;
 using Study1.Content.WritableContent;
+using Study1.ContentFramework.Math;
 using Study1.ContentFramework.Models;
 
 namespace Study1.Content.Processors;
@@ -100,16 +101,22 @@ public class GlbModelProcessor : ContentProcessor<SharpGLTF.Schema2.ModelRoot, W
             }
 
             // Convert the matrices into MonoGame format. Remember once that is done, transforms are applied in reverse order.
-            var localTransform = (Matrix)node.LocalTransform.Matrix;
+            var localTransformMatrix = (Matrix)node.LocalTransform.Matrix;
             var inverseBindMatrix = (Matrix)armature.InverseBindMatrices[boneIndex];
             if (node.VisualParent == node.VisualRoot)
             {
                 // If the bone is the root bone, apply the armature's transformation.
                 var parentTransform = (Matrix)node.VisualParent.LocalTransform.Matrix;
-                localTransform *= parentTransform;
+                localTransformMatrix *= parentTransform;
             }
 
-            bones[boneIndex] = new Bone(node.Name, parentIndex, localTransform, inverseBindMatrix);
+            Transform.FromMatrix(in localTransformMatrix, out var localTransform);
+            bones[boneIndex] = new Bone{
+                Name = node.Name,
+                ParentIndex = parentIndex,
+                LocalTransform = localTransform,
+                InverseBindMatrix = inverseBindMatrix
+            };
         }
 
         AnimationSet? animations = null;

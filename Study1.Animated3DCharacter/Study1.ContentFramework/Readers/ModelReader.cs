@@ -1,5 +1,6 @@
 using Microsoft.Xna.Framework.Content;
 using Microsoft.Xna.Framework.Graphics;
+using Study1.ContentFramework.Math;
 using Study1.ContentFramework.Models;
 using Model = Study1.ContentFramework.Models.Model;
 
@@ -33,9 +34,23 @@ public class ModelReader : ContentTypeReader<Model>
         {
             var name = input.ReadString();
             var parentIndex = input.ReadInt32();
-            var localTransform = input.ReadMatrix();
+            var translation = input.ReadVector3();
+            var rotation = input.ReadQuaternion();
+            var scale = input.ReadVector3();
             var inverseBindMatrix = input.ReadMatrix();
-            bones[i] = new Bone(name, parentIndex, localTransform, inverseBindMatrix);
+
+            bones[i] = new Bone
+            {
+                Name = name,
+                ParentIndex = parentIndex,
+                LocalTransform = new Transform
+                {
+                    Translation = translation,
+                    Rotation = rotation,
+                    Scale = scale
+                },
+                InverseBindMatrix = inverseBindMatrix,
+            };
         }
 
         var hasAnimations = input.ReadBoolean();
