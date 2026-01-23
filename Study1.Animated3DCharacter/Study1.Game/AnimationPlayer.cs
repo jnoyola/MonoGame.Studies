@@ -5,7 +5,7 @@ using Study1.ContentFramework.Models;
 
 namespace Study1.Game;
 
-public struct AnimationPlayer(AnimationSet animationSet)
+public static class AnimationPlayer
 {
     private const float DefaultTransitionDuration = 0.15f;
     private const float DefaultFadeDuration = 0.15f;
@@ -26,10 +26,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         public Vector3 Scale { get; set; }
     }
 
-    private readonly AnimationSet animationSet = animationSet;
-    private AnimationState state;
-
-    public void Play(
+    public static void Play(
+        ref AnimationState state,
+        ref AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight = 1.0f,
@@ -38,15 +37,15 @@ public struct AnimationPlayer(AnimationSet animationSet)
     {
         if (animationSet.AnimationLayerDefinitions.IsAdditiveLayer(layer))
         {
-            PlayAdditive(layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayAdditive(ref state, ref animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
         else
         {
-            PlayOverride(layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayOverride(ref state, ref animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
     }
 
-    public void Stop(AnimationLayer? layer = null, float fadeDuration = DefaultFadeDuration)
+    public static void Stop(ref AnimationState state, ref AnimationSet animationSet, AnimationLayer? layer = null, float fadeDuration = DefaultFadeDuration)
     {
         if (layer.HasValue)
         {
@@ -71,9 +70,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    public void UpdateTime(GameTime gameTime)
+    public static void UpdateTime(ref AnimationState state, GameTime gameTime)
     {
-        ResolveAdditiveClips();
+        ResolveAdditiveClips(ref state);
 
         var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
         for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxOverrideLayerCount; ++layerIndex)
@@ -90,7 +89,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    public void SampleBone(Bone bone, out Matrix result)
+    public static void SampleBone(ref AnimationState state, ref AnimationSet animationSet, Bone bone, out Matrix result)
     {
         // Check if this bone from the model exists in the animation set.
         var isBoneInAnimationSet = animationSet.TryGetBoneIndex(bone.Name, out var boneIndex);
@@ -104,13 +103,13 @@ public struct AnimationPlayer(AnimationSet animationSet)
         Transform tempTransform = new();
 
         // Step 1: Sample and combine override layers.
-        if (!SampleOverrideLayers(0, boneIndex, in bone.LocalTransform, ref boneTransform))
+        if (!SampleOverrideLayers(ref state, ref animationSet, 0, boneIndex, in bone.LocalTransform, ref boneTransform))
         {
             boneTransform = bone.LocalTransform;
         }
         for (int layerIndex = 1; layerIndex < animationSet.AnimationLayerDefinitions.OverrideLayerCount; ++layerIndex)
         {
-            if (SampleOverrideLayers(layerIndex, boneIndex, in bone.LocalTransform, ref tempTransform))
+            if (SampleOverrideLayers(ref state, ref animationSet, layerIndex, boneIndex, in bone.LocalTransform, ref tempTransform))
             {
                 Interpolate(in boneTransform, in tempTransform, state.OverrideLayers[layerIndex].Weight, out boneTransform);
             }
@@ -120,7 +119,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         tempTransform = Transform.Identity;
         for (int layerIndex = 0; layerIndex < animationSet.AnimationLayerDefinitions.AdditiveLayerCount; ++layerIndex)
         {
-            if (SampleAdditiveLayers(layerIndex, boneIndex, ref bone.LocalTransform, ref tempTransform))
+            if (SampleAdditiveLayers(ref state, ref animationSet, layerIndex, boneIndex, ref bone.LocalTransform, ref tempTransform))
             {
                 ApplyAdditive(ref boneTransform, ref tempTransform);
             }
@@ -129,7 +128,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         boneTransform.ToMatrix(out result);
     }
 
-    private void PlayOverride(
+    private static void PlayOverride(
+        ref AnimationState state,
+        ref AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -142,7 +143,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         if (resolvedAnimation != layerState.Animation)
         {
             // It's a new animation, but we already had one playing. Transition from the previous one.
-            SnapshotTransitionState(layerIndex, transitionDuration);
+            SnapshotTransitionState(ref state, layerIndex, transitionDuration);
 
             // Then start the new animation.
             layerState.Animation = animationSet.GetAnimation(animation);
@@ -164,7 +165,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void PlayAdditive(
+    private static void PlayAdditive(
+        ref AnimationState state,
+        ref AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -188,7 +191,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         };
     }
 
-    private void StopOverrideLayer(ref OverrideLayerState layerState, float fadeDuration = DefaultFadeDuration)
+    private static void StopOverrideLayer(ref OverrideLayerState layerState, float fadeDuration = DefaultFadeDuration)
     {
         if (fadeDuration == 0)
         {
@@ -207,7 +210,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void StopAdditiveClip(ref AdditiveClipState clipState, float fadeDuration = DefaultFadeDuration)
+    private static void StopAdditiveClip(ref AdditiveClipState clipState, float fadeDuration = DefaultFadeDuration)
     {
         if (fadeDuration == 0)
         {
@@ -225,7 +228,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void ResolveAdditiveClips()
+    private static void ResolveAdditiveClips(ref AnimationState state)
     {
         for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxAdditiveLayerCount; ++layerIndex)
         {
@@ -300,7 +303,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void UpdateOverrideLayerTime(ref OverrideLayerState layerState, float dt)
+    private static void UpdateOverrideLayerTime(ref OverrideLayerState layerState, float dt)
     {
         if (layerState.Animation == null && layerState.TransitionAnimation == null)
         {
@@ -382,7 +385,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void UpdateAdditiveClipTime(ref AdditiveClipState clipState, float dt)
+    private static void UpdateAdditiveClipTime(ref AdditiveClipState clipState, float dt)
     {
         if (clipState.Animation == null)
         {
@@ -451,7 +454,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private bool SampleOverrideLayers(int layerIndex, int boneIndex, in Transform boneLocalTransform, ref Transform outTransform)
+    private static bool SampleOverrideLayers(ref AnimationState state, ref AnimationSet animationSet, int layerIndex, int boneIndex, in Transform boneLocalTransform, ref Transform outTransform)
     {
         ref OverrideLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetOverrideLayer(layerIndex);
         ref OverrideLayerState layerState = ref state.OverrideLayers[layerIndex];
@@ -507,7 +510,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private bool SampleAdditiveLayers(int layerIndex, int boneIndex, ref Transform boneLocalTransform, ref Transform accumulatedTransform)
+    private static bool SampleAdditiveLayers(ref AnimationState state, ref AnimationSet animationSet, int layerIndex, int boneIndex, ref Transform boneLocalTransform, ref Transform accumulatedTransform)
     {
         ref AdditiveLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetAdditiveLayer(layerIndex);
         ref AdditiveLayerState layerState = ref state.AdditiveLayers[layerIndex];
@@ -794,7 +797,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private static float MeasureTimeDistance(float totalDuration, float firstTime, float secondTime)
         => firstTime <= secondTime ? secondTime - firstTime : totalDuration - firstTime + secondTime;
 
-    private void SnapshotTransitionState(int layerIndex, float transitionDuration)
+    private static void SnapshotTransitionState(ref AnimationState state, int layerIndex, float transitionDuration)
     {
         ref var layerState = ref state.OverrideLayers[layerIndex];
         if (transitionDuration <= 0 || layerState.Animation == null)
