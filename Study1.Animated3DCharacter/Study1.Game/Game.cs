@@ -1,4 +1,5 @@
-﻿using Microsoft.Xna.Framework;
+﻿using System.Collections;
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Study1.ContentFramework.Models;
@@ -9,30 +10,32 @@ namespace Study1.Game;
 
 public class Game : Microsoft.Xna.Framework.Game
 {
+    private const int CharacterRowCount = 25;
+    private const int CharacterColCount = 40;
+    private const int CharacterCount = CharacterRowCount * CharacterColCount;
+    private static readonly Random Random = new();
+
     private readonly GraphicsDeviceManager _graphics;
 
     private HeadsUpDisplay _hud;
 
+    private float _cameraSpeed;
+    private Matrix _cameraView;
     private Matrix _cameraProjection;
     
     private Grid? _grid;
 
-    private Matrix _characterTransform;
-    private Vector3 _characterInstructedVelocity;
-    private Vector3 _characterVelocity;
-    private Vector3 _characterHeading;
-    private float _characterSpeed;
     private Model? _characterModel;
-    private Matrix[]? _characterBoneTransforms;
-    private AnimationPlayer _animationPlayer;
+    private Matrix[] _characterTransforms;
+    private Matrix[][] _characterBoneTransforms;
+    private AnimationSet _animationSet;
+    private AnimationState[] _animationStates;
     private Effect? _skinnedEffect;
 
+    private BitArray _isRunning;
+    private BitArray _isWaving;
+    private bool _isHeadDown;
     KeyboardState _prevKeyboardState;
-    bool _isWaving;
-    bool _isLeftHandClosed;
-    bool _isRightHandClosed;
-    bool _isHeadDown;
-    bool _isBreathingHeavy;
 
     public Game()
     {
@@ -47,11 +50,36 @@ public class Game : Microsoft.Xna.Framework.Game
         IsMouseVisible = true;
         Content.RootDirectory = "Content";
 
-        _hud = new HeadsUpDisplay("Controls:\nWASD - Move\nF - Wave\nQE - Open/Close hands\nR - Raise/Lower head\nT - Toggle heavy breathing\nEsc - Exit");
+        _hud = new HeadsUpDisplay("Controls:\nWASD - Move camera\nR - Raise/Lower heads\nEsc - Exit");
 
-        _characterTransform = Matrix.Identity;
-        _characterHeading = Vector3.UnitZ;
-        _characterSpeed = 4f;
+        _cameraSpeed = 10f;
+        var cameraTarget = new Vector3(0, 1f, 0);
+        var cameraPosition = new Vector3(0, 20, -40);
+        _cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
+
+        _characterTransforms = new Matrix[CharacterCount];
+        _characterBoneTransforms = new Matrix[CharacterCount][];
+        _animationStates = new AnimationState[CharacterCount];
+        _isRunning = new BitArray(CharacterCount);
+        _isWaving = new BitArray(CharacterCount);
+
+        var rowSpacing = 1.5f;
+        var colSpacing = 1.0f;
+        for (int rowIndex = 0; rowIndex < CharacterRowCount; ++rowIndex)
+        {
+            for (int colIndex = 0; colIndex < CharacterColCount; ++colIndex)
+            {
+                _characterTransforms[rowIndex * CharacterColCount + colIndex] = Matrix.CreateWorld(
+                    new Vector3(
+                        -(float)(CharacterColCount - 1) * colSpacing / 2 + colIndex * colSpacing, 
+                        0, 
+                        -(float)(CharacterRowCount - 1) * rowSpacing / 2 + rowIndex * rowSpacing
+                    ),
+                    Vector3.Backward,
+                    Vector3.Up
+                );
+            }
+        }
     }
 
     protected override void Initialize()
@@ -73,12 +101,14 @@ public class Game : Microsoft.Xna.Framework.Game
             100f
         );
 
-        _grid = new Grid(GraphicsDevice, 20);
+        _grid = new Grid(GraphicsDevice, 50);
 
         _characterModel = Content.Load<Model>("Models/man");
-        _characterBoneTransforms = new Matrix[_characterModel.Bones.Count];
-        var characterAnims = Content.Load<AnimationSet>("Models/man_anims");
-        _animationPlayer = new AnimationPlayer(characterAnims);
+        for (int i = 0; i < CharacterCount; ++i)
+        {
+            _characterBoneTransforms[i] = new Matrix[_characterModel.Bones.Count];
+        }
+        _animationSet = Content.Load<AnimationSet>("Models/man_anims");
 
         _skinnedEffect = Content.Load<Effect>("Effects/SkinnedVertexColoredEffect");
         _skinnedEffect.Parameters["DiffuseColor"].SetValue(new Vector4(1f));
@@ -95,55 +125,67 @@ public class Game : Microsoft.Xna.Framework.Game
         if (keyboardState.IsKeyDown(Keys.Escape))
             Exit();
 
-        // Control character position.
-        _characterInstructedVelocity = Vector3.Zero;
+        // Control camera position.
+        var cameraVelocity = Vector3.Zero;
         if (keyboardState.IsKeyDown(Keys.W))
         {
-            _characterInstructedVelocity += Vector3.UnitZ;
+            cameraVelocity += Vector3.UnitZ;
         }
         if (keyboardState.IsKeyDown(Keys.S))
         {
-            _characterInstructedVelocity -= Vector3.UnitZ;
+            cameraVelocity -= Vector3.UnitZ;
         }
         if (keyboardState.IsKeyDown(Keys.A))
         {
-            _characterInstructedVelocity += Vector3.UnitX;
+            cameraVelocity += Vector3.UnitX;
         }
         if (keyboardState.IsKeyDown(Keys.D))
         {
-            _characterInstructedVelocity -= Vector3.UnitX;
+            cameraVelocity -= Vector3.UnitX;
         }
-        if (_characterInstructedVelocity != Vector3.Zero)
+        if (cameraVelocity != Vector3.Zero)
         {
-            _characterInstructedVelocity.Normalize();
-            _characterHeading = _characterInstructedVelocity;
-            _characterInstructedVelocity *= _characterSpeed * (float)gameTime.ElapsedGameTime.TotalSeconds;
+            cameraVelocity.Normalize();
+            cameraVelocity *= _cameraSpeed * (float)gameTime.ElapsedGameTime.TotalSeconds;
         }
 
-        _isWaving = keyboardState.IsKeyDown(Keys.F);
-        if (keyboardState.IsKeyDown(Keys.Q) && !_prevKeyboardState.IsKeyDown(Keys.Q))
-        {
-            _isLeftHandClosed = !_isLeftHandClosed;
-        }
-        if (keyboardState.IsKeyDown(Keys.E) && !_prevKeyboardState.IsKeyDown(Keys.E))
-        {
-            _isRightHandClosed = !_isRightHandClosed;
-        }
         if (keyboardState.IsKeyDown(Keys.R) && !_prevKeyboardState.IsKeyDown(Keys.R))
         {
             _isHeadDown = !_isHeadDown;
         }
-        if (keyboardState.IsKeyDown(Keys.T) && !_prevKeyboardState.IsKeyDown(Keys.T))
-        {
-            _isBreathingHeavy = !_isBreathingHeavy;
-        }
 
         // Apply physics.
-        _characterTransform = Matrix.CreateWorld(_characterTransform.Translation, -_characterHeading, Vector3.Up);
-        _characterVelocity = _characterInstructedVelocity;
-        _characterTransform.Translation += _characterVelocity;
+        _cameraView.Translation += cameraVelocity;
 
         _prevKeyboardState = keyboardState;
+
+        // Start each character running based on position.
+        for (int rowIndex = 0; rowIndex < CharacterRowCount; ++rowIndex)
+        {
+            for (int colIndex = 0; colIndex < CharacterColCount; ++colIndex)
+            {
+                if (gameTime.TotalGameTime.TotalSeconds * 10 > rowIndex + colIndex * 1.4)
+                {
+                    _isRunning[rowIndex * CharacterColCount + colIndex] = true;
+                }
+            }
+        }
+
+        // Start one character waving each tick with a random chance.
+        for (int i = 0; i < CharacterCount; ++i)
+        {
+            if (_isWaving[i])
+            {
+                _isWaving[i] = false;
+                continue;
+            }
+
+            if (Random.NextSingle() < 1 / (float)CharacterCount)
+            {
+                _isWaving[i] = true;
+                break;
+            }
+        }
     }
 
     protected override void Draw(GameTime gameTime)
@@ -151,59 +193,62 @@ public class Game : Microsoft.Xna.Framework.Game
         GraphicsDevice.Clear(Color.SlateGray);
         GraphicsDevice.BlendState = BlendState.Opaque;
         GraphicsDevice.DepthStencilState = DepthStencilState.Default;
-        
-        var cameraTarget = _characterTransform.Translation + new Vector3(0, 1f, 0);
-        var cameraPosition = cameraTarget + new Vector3(0, 6, -8);
-        var cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
 
-        _grid?.Draw(cameraView, _cameraProjection);
-        DrawCharacter(gameTime, cameraView);
+        _grid?.Draw(_cameraView, _cameraProjection);
+        for (int characterIndex = 0; characterIndex < CharacterCount; ++characterIndex)
+        {
+            DrawCharacter(characterIndex, gameTime, _cameraView);
+        }
 
         _hud?.Draw(gameTime);
     }
 
-    private void DrawCharacter(GameTime gameTime, Matrix cameraView)
+    private void DrawCharacter(int characterIndex, GameTime gameTime, Matrix cameraView)
     {
         if (_characterModel == null || _characterBoneTransforms == null || _skinnedEffect == null)
         {
             return;
         }
 
+        ref var animationState = ref _animationStates[characterIndex];
+        ref var boneTransforms = ref _characterBoneTransforms[characterIndex];
+        ref var characterTransform = ref _characterTransforms[characterIndex];
+
         // Select the correct animation.
-        SelectAnimations();
+        SelectAnimations(characterIndex, ref animationState);
 
         // Step 1: Initialize the bone transform array with animation transforms.
-        _animationPlayer.UpdateTime(gameTime);
+        AnimationPlayer.UpdateTime(ref animationState, gameTime);
         for (int i = 0; i < _characterModel.Bones.Count; ++i)
         {
-            _animationPlayer.SampleBone(_characterModel.Bones[i], out _characterBoneTransforms[i]);
+            AnimationPlayer.SampleBone(ref animationState, ref _animationSet, _characterModel.Bones[i], out boneTransforms[i]);
         }
 
         // Step 2: Transform each bone transform by the chain of parent bone transforms.
         // Note this works because the bones are required to be in order, where parentIndex < i for all bones.
         // Remember that MonoGame, like most graphics systems, stores transformation matrices as rows instead of columns,
         // which means that matrix multiplication order is reversed from the mathematical representation to apply transforms.
-        for (int i = 0; i < _characterBoneTransforms.Length; ++i)
+        for (int i = 0; i < boneTransforms.Length; ++i)
         {
             var parentIndex = _characterModel.Bones[i].ParentIndex;
             if (parentIndex >= 0)
             {
-                _characterBoneTransforms[i] *= _characterBoneTransforms[parentIndex];
+                boneTransforms[i] *= boneTransforms[parentIndex];
             }
         }
 
         // Step 3: Layer on an additional transformation to convert from local coordinate space to model coordinate space
         // using the inverse bind matrix.
-        for (int i = 0; i < _characterBoneTransforms.Length; ++i)
+        for (int i = 0; i < boneTransforms.Length; ++i)
         {
-            _characterBoneTransforms[i] = _characterModel.Bones[i].InverseBindMatrix * _characterBoneTransforms[i];
+            boneTransforms[i] = _characterModel.Bones[i].InverseBindMatrix * boneTransforms[i];
         }
 
         // Now draw all components of the model.
-        _skinnedEffect.Parameters["Bones"].SetValue(_characterBoneTransforms);
-        _skinnedEffect.Parameters["World"].SetValue(_characterTransform);
-        _skinnedEffect.Parameters["WorldInverseTranspose"].SetValue(Matrix.Transpose(Matrix.Invert(_characterTransform)));
-        _skinnedEffect.Parameters["WorldViewProj"].SetValue(_characterTransform * cameraView * _cameraProjection);
+        _skinnedEffect.Parameters["Bones"].SetValue(boneTransforms);
+        _skinnedEffect.Parameters["World"].SetValue(characterTransform);
+        _skinnedEffect.Parameters["WorldInverseTranspose"].SetValue(Matrix.Transpose(Matrix.Invert(characterTransform)));
+        _skinnedEffect.Parameters["WorldViewProj"].SetValue(characterTransform * cameraView * _cameraProjection);
         for (int meshIndex = 0; meshIndex < _characterModel.Meshes.Count; ++meshIndex)
         {
             var mesh = _characterModel.Meshes[meshIndex];
@@ -219,43 +264,27 @@ public class Game : Microsoft.Xna.Framework.Game
         }
     }
 
-    private void SelectAnimations()
+    private void SelectAnimations(int characterIndex, ref AnimationState animationState)
     {
-        if (_characterInstructedVelocity == Vector3.Zero)
+        if (_isRunning[characterIndex])
         {
-            _animationPlayer.Play(AnimationLayer.Base, "idle");
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.Base, "run_forward");
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "hand_closed_left");
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "hand_closed_right");
         }
         else
         {
-            _animationPlayer.Play(AnimationLayer.Base, "run_forward", playbackSpeed: _characterSpeed / 3);
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.Base, "idle");
         }
 
-        if (_isWaving)
+        if (_isWaving[characterIndex])
         {
-            // This plays on a separate layer, and can be performed while idle or while running.
-            _animationPlayer.Play(AnimationLayer.UpperBody, "wave", transitionDuration: 0.5f);
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.UpperBody, "wave");
         }
 
-        // These are all played on the additive layer, and therefore can stack up to the 3 slot capacity.
-        if (_isLeftHandClosed)
-        {
-            _animationPlayer.Play(AnimationLayer.AdditiveBase, "hand_closed_left");
-        }
-        if (_isRightHandClosed)
-        {
-            _animationPlayer.Play(AnimationLayer.AdditiveBase, "hand_closed_right");
-        }
         if (_isHeadDown)
         {
-            _animationPlayer.Play(AnimationLayer.AdditiveBase, "head_down", transitionDuration: 0.5f);
-        }
-        if (_isBreathingHeavy)
-        {
-            // Since this additive animation is 4th in priority, and the additive layer is configured to have 3 slots,
-            // this will get preempted if the other 3 additive animations are all being played. Notice that you always
-            // see smooth fades when turning on and off additive animations, *unless* you have this one on and then
-            // switch to having the other 3 higher priority animations on.
-            _animationPlayer.Play(AnimationLayer.AdditiveBase, "breathe_heavy");
+            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "head_down");
         }
     }
 }
