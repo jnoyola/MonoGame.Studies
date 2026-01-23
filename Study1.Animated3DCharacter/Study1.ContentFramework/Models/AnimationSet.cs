@@ -2,13 +2,16 @@ using System.Collections;
 
 namespace Study1.ContentFramework.Models;
 
-public readonly struct AnimationSet : IEnumerable<KeyValuePair<string, Animation>>
+public readonly struct AnimationSet
 {
+    private readonly IReadOnlyDictionary<string, int> _boneIndices;
     private readonly IReadOnlyDictionary<string, Animation> _animations;
 
-    public AnimationSet(IReadOnlyDictionary<string, Animation> animations)
+    public AnimationSet(IReadOnlyDictionary<string, int> boneIndices, IReadOnlyDictionary<string, Animation> animations, AnimationLayerDefinitions animationLayers)
     {
+        _boneIndices = boneIndices;
         _animations = animations;
+        AnimationLayerDefinitions = animationLayers;
 
         // TODO: move this to content writer.
         BoneChannelCount = 0;
@@ -21,13 +24,19 @@ public readonly struct AnimationSet : IEnumerable<KeyValuePair<string, Animation
         }
     }
 
-    public readonly int Count => _animations.Count;
+    public readonly int BoneCount => _boneIndices.Count;
+
+    public readonly int AnimationCount => _animations.Count;
 
     public readonly int BoneChannelCount { get; }
 
-    public readonly Animation Get(string key) => _animations[key];
+    public readonly AnimationLayerDefinitions AnimationLayerDefinitions { get; }
 
-    public readonly IEnumerator<KeyValuePair<string, Animation>> GetEnumerator() => _animations.GetEnumerator();
+    public readonly bool TryGetBoneIndex(string boneName, out int index) => _boneIndices.TryGetValue(boneName, out index);
 
-    readonly IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public readonly Animation GetAnimation(string key) => _animations[key];
+
+    public readonly IEnumerable<KeyValuePair<string, int>> GetBoneIndices() => _boneIndices;
+
+    public readonly IEnumerable<KeyValuePair<string, Animation>> GetAnimations() => _animations;
 }

@@ -27,4 +27,26 @@ This study includes the following:
 
 ### Stage 1.2: Blended Animations
 
-### Stage 1.3: PC Controls
+This stage adds a lot of complexity to the animation definitions, animation player, and state.
+We are no longer limited to playing a single animation on the character's entire skeleton, but can now
+blend animations across different parts of the skeleton. Layers are designed to be defined for a game's
+specific needs, but are demonstrated here with 2 override layers (base and upper body) and one additive
+layer (which can stack multiple fine adjustments).
+
+This study includes the following:
+1. Content structures for animation metadata, layer definitions, and bone masks
+2. Sampling and blending multiple override and additive layers
+3. Five new animations to demonstrate the various types of blending
+
+### Stage 1.3: Performance
+
+This stage dives into performance optimizations that reduce pose calculation time and crank up frames per
+second. Depending on hardware, these optimizations could provide ~20% increase in performance.
+
+This study includes the following:
+1. A testbed for performance, animating 1000 individual characters with layered animations
+2. Pruning animation channels that are not animated
+
+## Future Studies
+
+Control Schemes, UI, Special Effects

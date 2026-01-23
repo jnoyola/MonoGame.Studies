@@ -22,12 +22,14 @@ public class ModelWriter : ContentTypeWriter<WritableModel>
         }
 
         output.Write((uint)value.Bones.Count);
-        foreach (var boneData in value.Bones)
+        foreach (var bone in value.Bones)
         {
-            output.Write(boneData.Name);
-            output.Write(boneData.ParentIndex);
-            output.Write(boneData.LocalTransform);
-            output.Write(boneData.InverseBindMatrix);
+            output.Write(bone.Name);
+            output.Write(bone.ParentIndex);
+            output.Write(bone.LocalTransform.Translation);
+            output.Write(bone.LocalTransform.Rotation);
+            output.Write(bone.LocalTransform.Scale);
+            output.Write(bone.InverseBindMatrix);
         }
 
         output.Write(value.Animations != null);
