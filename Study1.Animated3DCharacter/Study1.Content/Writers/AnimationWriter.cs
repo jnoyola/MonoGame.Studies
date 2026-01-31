@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.Xna.Framework.Content.Pipeline;
 using Microsoft.Xna.Framework.Content.Pipeline.Serialization.Compiler;
 using Study1.ContentFramework.Models;
@@ -23,33 +24,64 @@ public class AnimationWriter : ContentTypeWriter<Animation>
             output.Write(boneIndex);
         }
 
-        output.Write((uint)value.BoneChannels.Count);
-        foreach (var channel in value.BoneChannels)
+        if (value.TranslationChannels == null)
         {
-            output.Write(channel.BoneName);
-
-            output.Write((uint)channel.Translations.Keyframes.Length);
-            foreach (var frame in channel.Translations.Keyframes)
+            output.Write((uint)0);
+        }
+        else
+        {
+            output.Write((uint)value.TranslationChannels.Length);
+            foreach (var channel in value.TranslationChannels)
             {
-                output.Write(frame.Time);
-                output.Write(frame.Value);
-            }
+                output.Write(channel.BoneIndex);
 
-            output.Write((uint)channel.Rotations.Keyframes.Length);
-            foreach (var frame in channel.Rotations.Keyframes)
-            {
-                output.Write(frame.Time);
-                output.Write(frame.Value);
-            }
-
-            output.Write((uint)channel.Scales.Keyframes.Length);
-            foreach (var frame in channel.Scales.Keyframes)
-            {
-                output.Write(frame.Time);
-                output.Write(frame.Value);
+                output.Write((uint)channel.Keyframes.Length);
+                foreach (var frame in channel.Keyframes)
+                {
+                    output.Write(frame.Time);
+                    output.Write(frame.Value);
+                }
             }
         }
 
-        output.Write((uint)value.DefaultLayer);
+        if (value.RotationChannels == null)
+        {
+            output.Write((uint)0);
+        }
+        else
+        {
+            output.Write((uint)value.RotationChannels.Length);
+            foreach (var channel in value.RotationChannels)
+            {
+                output.Write(channel.BoneIndex);
+
+                output.Write((uint)channel.Keyframes.Length);
+                foreach (var frame in channel.Keyframes)
+                {
+                    output.Write(frame.Time);
+                    output.Write(frame.Value);
+                }
+            }
+        }
+
+        if (value.ScaleChannels == null)
+        {
+            output.Write((uint)0);
+        }
+        else
+        {
+            output.Write((uint)value.ScaleChannels.Length);
+            foreach (var channel in value.ScaleChannels)
+            {
+                output.Write(channel.BoneIndex);
+
+                output.Write((uint)channel.Keyframes.Length);
+                foreach (var frame in channel.Keyframes)
+                {
+                    output.Write(frame.Time);
+                    output.Write(frame.Value);
+                }
+            }
+        }
     }
 }

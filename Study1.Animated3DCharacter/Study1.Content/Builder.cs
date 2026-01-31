@@ -48,13 +48,13 @@ public class Builder : ContentBuilder
             {
                 Animations =
                 [
-                    new() { Name = "idle", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.Base },
-                    new() { Name = "run_forward", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.Base },
-                    new() { Name = "wave", WrapMode = WrapMode.Once, DefaultLayer = AnimationLayer.UpperBody },
-                    new() { Name = "hand_closed_left", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
-                    new() { Name = "hand_closed_right", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
-                    new() { Name = "head_down", WrapMode = WrapMode.Clamp, DefaultLayer = AnimationLayer.AdditiveBase },
-                    new() { Name = "breathe_heavy", WrapMode = WrapMode.Loop, DefaultLayer = AnimationLayer.AdditiveBase },
+                    new() { Name = "idle", WrapMode = WrapMode.Loop },
+                    new() { Name = "run_forward", WrapMode = WrapMode.Loop },
+                    new() { Name = "wave", WrapMode = WrapMode.Once },
+                    new() { Name = "hand_closed_left", WrapMode = WrapMode.Clamp },
+                    new() { Name = "hand_closed_right", WrapMode = WrapMode.Clamp },
+                    new() { Name = "head_down", WrapMode = WrapMode.Clamp },
+                    new() { Name = "breathe_heavy", WrapMode = WrapMode.Loop },
                 ],
                 AnimationLayerDefinitions =
                 [

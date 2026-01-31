@@ -2,6 +2,7 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using Study1.ContentFramework.Math;
 using Study1.ContentFramework.Models;
 using Study1.ContentFramework.Readers;
 using Model = Study1.ContentFramework.Models.Model;
@@ -24,10 +25,13 @@ public class Game : Microsoft.Xna.Framework.Game
     private Matrix _cameraProjection;
     
     private Grid? _grid;
+    
+    private AnimationPlayer _animationPlayer;
 
     private Model? _characterModel;
     private Matrix[] _characterTransforms;
-    private Matrix[][] _characterBoneTransforms;
+    private Transform[]? _boneTransforms;
+    private Matrix[]? _boneTransformMatrices;
     private AnimationSet _animationSet;
     private AnimationState[] _animationStates;
     private Effect? _skinnedEffect;
@@ -44,7 +48,7 @@ public class Game : Microsoft.Xna.Framework.Game
             PreferredBackBufferWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width,
             PreferredBackBufferHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height,
             SynchronizeWithVerticalRetrace = false,  // Disable vsync because it can force FPS to be limited on some systems.
-            IsFullScreen = true,
+            // IsFullScreen = true,
         };
         IsFixedTimeStep = false;
         IsMouseVisible = true;
@@ -57,8 +61,9 @@ public class Game : Microsoft.Xna.Framework.Game
         var cameraPosition = new Vector3(0, 20, -40);
         _cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
 
+        _animationPlayer = new AnimationPlayer();
+
         _characterTransforms = new Matrix[CharacterCount];
-        _characterBoneTransforms = new Matrix[CharacterCount][];
         _animationStates = new AnimationState[CharacterCount];
         _isRunning = new BitArray(CharacterCount);
         _isWaving = new BitArray(CharacterCount);
@@ -104,10 +109,8 @@ public class Game : Microsoft.Xna.Framework.Game
         _grid = new Grid(GraphicsDevice, 50);
 
         _characterModel = Content.Load<Model>("Models/man");
-        for (int i = 0; i < CharacterCount; ++i)
-        {
-            _characterBoneTransforms[i] = new Matrix[_characterModel.Bones.Count];
-        }
+        _boneTransforms = new Transform[_characterModel.Bones.Length];
+        _boneTransformMatrices = new Matrix[_characterModel.Bones.Length];
         _animationSet = Content.Load<AnimationSet>("Models/man_anims");
 
         _skinnedEffect = Content.Load<Effect>("Effects/SkinnedVertexColoredEffect");
@@ -197,6 +200,7 @@ public class Game : Microsoft.Xna.Framework.Game
         _grid?.Draw(_cameraView, _cameraProjection);
         for (int characterIndex = 0; characterIndex < CharacterCount; ++characterIndex)
         {
+            // TODO: multithreading
             DrawCharacter(characterIndex, gameTime, _cameraView);
         }
 
@@ -205,13 +209,12 @@ public class Game : Microsoft.Xna.Framework.Game
 
     private void DrawCharacter(int characterIndex, GameTime gameTime, Matrix cameraView)
     {
-        if (_characterModel == null || _characterBoneTransforms == null || _skinnedEffect == null)
+        if (_characterModel == null || _boneTransforms == null || _boneTransformMatrices == null || _skinnedEffect == null)
         {
             return;
         }
 
         ref var animationState = ref _animationStates[characterIndex];
-        ref var boneTransforms = ref _characterBoneTransforms[characterIndex];
         ref var characterTransform = ref _characterTransforms[characterIndex];
 
         // Select the correct animation.
@@ -219,37 +222,34 @@ public class Game : Microsoft.Xna.Framework.Game
 
         // Step 1: Initialize the bone transform array with animation transforms.
         AnimationPlayer.UpdateTime(ref animationState, gameTime);
-        for (int i = 0; i < _characterModel.Bones.Count; ++i)
-        {
-            AnimationPlayer.SampleBone(ref animationState, ref _animationSet, _characterModel.Bones[i], out boneTransforms[i]);
-        }
+        _animationPlayer.SampleBones(ref animationState, ref _animationSet, _characterModel.Bones, _boneTransformMatrices);
 
         // Step 2: Transform each bone transform by the chain of parent bone transforms.
         // Note this works because the bones are required to be in order, where parentIndex < i for all bones.
         // Remember that MonoGame, like most graphics systems, stores transformation matrices as rows instead of columns,
         // which means that matrix multiplication order is reversed from the mathematical representation to apply transforms.
-        for (int i = 0; i < boneTransforms.Length; ++i)
+        for (int i = 0; i < _boneTransformMatrices.Length; ++i)
         {
             var parentIndex = _characterModel.Bones[i].ParentIndex;
             if (parentIndex >= 0)
             {
-                boneTransforms[i] *= boneTransforms[parentIndex];
+                _boneTransformMatrices[i] *= _boneTransformMatrices[parentIndex];
             }
         }
 
         // Step 3: Layer on an additional transformation to convert from local coordinate space to model coordinate space
         // using the inverse bind matrix.
-        for (int i = 0; i < boneTransforms.Length; ++i)
+        for (int i = 0; i < _boneTransformMatrices.Length; ++i)
         {
-            boneTransforms[i] = _characterModel.Bones[i].InverseBindMatrix * boneTransforms[i];
+            _boneTransformMatrices[i] = _characterModel.Bones[i].InverseBindMatrix * _boneTransformMatrices[i];
         }
 
         // Now draw all components of the model.
-        _skinnedEffect.Parameters["Bones"].SetValue(boneTransforms);
+        _skinnedEffect.Parameters["Bones"].SetValue(_boneTransformMatrices);
         _skinnedEffect.Parameters["World"].SetValue(characterTransform);
         _skinnedEffect.Parameters["WorldInverseTranspose"].SetValue(Matrix.Transpose(Matrix.Invert(characterTransform)));
         _skinnedEffect.Parameters["WorldViewProj"].SetValue(characterTransform * cameraView * _cameraProjection);
-        for (int meshIndex = 0; meshIndex < _characterModel.Meshes.Count; ++meshIndex)
+        for (int meshIndex = 0; meshIndex < _characterModel.Meshes.Length; ++meshIndex)
         {
             var mesh = _characterModel.Meshes[meshIndex];
             GraphicsDevice.SetVertexBuffer(mesh.VertexBuffer);

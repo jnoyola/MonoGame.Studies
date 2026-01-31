@@ -19,6 +19,5 @@ public struct AnimationInfo
 {
     public required string Name { get; set; }
     public required WrapMode WrapMode { get; set; }
-    public required AnimationLayer DefaultLayer { get; set; }
     public FreezeRootBoneOption FreezeRootBone { get; set; }
 }
