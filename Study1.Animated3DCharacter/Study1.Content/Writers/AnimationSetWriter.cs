@@ -13,13 +13,6 @@ public class AnimationSetWriter : ContentTypeWriter<AnimationSet>
 
     protected override void Write(ContentWriter output, AnimationSet value)
     {
-        output.Write((uint)value.BoneCount);
-        foreach (var (name, index) in value.GetBoneIndices())
-        {
-            output.Write(name);
-            output.Write(index);
-        }
-
         output.Write((uint)value.AnimationCount);
         foreach (var (name, animation) in value.GetAnimations())
         {
