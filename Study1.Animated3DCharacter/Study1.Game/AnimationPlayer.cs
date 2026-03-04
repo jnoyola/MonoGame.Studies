@@ -37,7 +37,7 @@ public class AnimationPlayer
 
     public static void Play(
         ref AnimationState state,
-        ref AnimationSet animationSet,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight = 1.0f,
@@ -46,11 +46,11 @@ public class AnimationPlayer
     {
         if (animationSet.AnimationLayerDefinitions.IsAdditiveLayer(layer))
         {
-            PlayAdditive(ref state, ref animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayAdditive(ref state, in animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
         else
         {
-            PlayOverride(ref state, ref animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayOverride(ref state, in animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
     }
 
@@ -125,7 +125,7 @@ public class AnimationPlayer
 
     private static void PlayOverride(
         ref AnimationState state,
-        ref AnimationSet animationSet,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -162,7 +162,7 @@ public class AnimationPlayer
 
     private static void PlayAdditive(
         ref AnimationState state,
-        ref AnimationSet animationSet,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -225,13 +225,15 @@ public class AnimationPlayer
 
     private static void ResolveAdditiveClips(ref AnimationState state)
     {
+        Span<bool> isClipMatched = stackalloc bool[AdditiveLayerState.MaxAdditiveClipCount];
+        Span<bool> isSlotMatched = stackalloc bool[AdditiveLayerState.MaxAdditiveClipCount];
         for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxAdditiveLayerCount; ++layerIndex)
         {
             ref var layerState = ref state.AdditiveLayers[layerIndex];
+            isClipMatched.Clear();
+            isSlotMatched.Clear();
 
             // Find which desired animations are already playing, and which slots are already occupied.
-            var isClipMatched = new AdditiveLayerState.ClipFlags();
-            var isSlotMatched = new AdditiveLayerState.ClipFlags();
             for (int clipIndex = 0; clipIndex < layerState.RequestedClipIndex; ++clipIndex)
             {
                 // Perform a small linear scan to search for the requested animation in the current slots.
@@ -607,7 +609,6 @@ public class AnimationPlayer
                     continue;
                 }
 
-                // TODO: something seems off about the thumbs?
                 ref var boneLocalTransform = ref bones[boneIndex].LocalTransform;
                 if (SampleBoneTranslation(
                     clipState.Animation,

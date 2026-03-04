@@ -1,8 +1,9 @@
-﻿using System.Collections;
+﻿using System.Runtime.CompilerServices;
+using Arch.Core;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
-using Study1.ContentFramework.Math;
+using Schedulers;
 using Study1.ContentFramework.Models;
 using Study1.ContentFramework.Readers;
 using Model = Study1.ContentFramework.Models.Model;
@@ -11,13 +12,16 @@ namespace Study1.Game;
 
 public class Game : Microsoft.Xna.Framework.Game
 {
+    private record struct Position(Matrix Transform);
+    private record struct BoneTransforms(Matrix[] Matrices);
+    private record struct CharacterState(int Row, int Col, bool IsRunning, bool IsWaving, bool IsHeadDown);
+
     private const int CharacterRowCount = 25;
     private const int CharacterColCount = 40;
     private const int CharacterCount = CharacterRowCount * CharacterColCount;
     private static readonly Random Random = new();
 
-    private readonly GraphicsDeviceManager _graphics;
-
+    private Profiler _profiler;
     private HeadsUpDisplay _hud;
 
     private float _cameraSpeed;
@@ -25,72 +29,66 @@ public class Game : Microsoft.Xna.Framework.Game
     private Matrix _cameraProjection;
     
     private Grid? _grid;
-    
-    private AnimationPlayer _animationPlayer;
+
+    private World _world;
+    private QueryDescription _stateQuery;
+    private QueryDescription _animationQuery;
+    private QueryDescription _drawQuery;
 
     private Model? _characterModel;
-    private Matrix[] _characterTransforms;
-    private Transform[]? _boneTransforms;
-    private Matrix[]? _boneTransformMatrices;
     private AnimationSet _animationSet;
-    private AnimationState[] _animationStates;
     private Effect? _skinnedEffect;
 
-    private BitArray _isRunning;
-    private BitArray _isWaving;
     private bool _isHeadDown;
     KeyboardState _prevKeyboardState;
 
     public Game()
     {
-        _graphics = new GraphicsDeviceManager(this)
+        _ = new GraphicsDeviceManager(this)
         {
             PreferredBackBufferWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width,
             PreferredBackBufferHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height,
             SynchronizeWithVerticalRetrace = false,  // Disable vsync because it can force FPS to be limited on some systems.
-            // IsFullScreen = true,
+            IsFullScreen = false,
         };
         IsFixedTimeStep = false;
         IsMouseVisible = true;
         Content.RootDirectory = "Content";
 
-        _hud = new HeadsUpDisplay("Controls:\nWASD - Move camera\nR - Raise/Lower heads\nEsc - Exit");
+        _profiler = new Profiler();
+        _hud = new HeadsUpDisplay(_profiler, "Controls:\nWASD - Move camera\nR - Raise/Lower heads\nEsc - Exit");
 
         _cameraSpeed = 10f;
         var cameraTarget = new Vector3(0, 1f, 0);
         var cameraPosition = new Vector3(0, 20, -40);
         _cameraView = Matrix.CreateLookAt(cameraPosition, cameraTarget, Vector3.Up);
 
-        _animationPlayer = new AnimationPlayer();
-
-        _characterTransforms = new Matrix[CharacterCount];
-        _animationStates = new AnimationState[CharacterCount];
-        _isRunning = new BitArray(CharacterCount);
-        _isWaving = new BitArray(CharacterCount);
-
-        var rowSpacing = 1.5f;
-        var colSpacing = 1.0f;
-        for (int rowIndex = 0; rowIndex < CharacterRowCount; ++rowIndex)
+        var ecsSchedulerConfig = new JobScheduler.Config
         {
-            for (int colIndex = 0; colIndex < CharacterColCount; ++colIndex)
-            {
-                _characterTransforms[rowIndex * CharacterColCount + colIndex] = Matrix.CreateWorld(
-                    new Vector3(
-                        -(float)(CharacterColCount - 1) * colSpacing / 2 + colIndex * colSpacing, 
-                        0, 
-                        -(float)(CharacterRowCount - 1) * rowSpacing / 2 + rowIndex * rowSpacing
-                    ),
-                    Vector3.Backward,
-                    Vector3.Up
-                );
-            }
-        }
+            ThreadCount = Environment.ProcessorCount,
+            ThreadPrefixName = "ECS",
+        };
+        _world = World.Create();
+        World.SharedJobScheduler = new(ecsSchedulerConfig);
+        AnimationSystem.Initialize(ecsSchedulerConfig.ThreadCount);
+        _stateQuery = new QueryDescription().WithAll<CharacterState>();
+        _animationQuery = new QueryDescription().WithAll<CharacterState, AnimationState, BoneTransforms>();
+        _drawQuery = new QueryDescription().WithAll<Position, BoneTransforms>();
+
+        // _animationPlayer = new AnimationPlayer();
     }
 
     protected override void Initialize()
     {
         base.Initialize();
         _prevKeyboardState = Keyboard.GetState();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        _world.Dispose();
+        World.SharedJobScheduler?.Dispose();
     }
 
     protected override void LoadContent()
@@ -109,8 +107,30 @@ public class Game : Microsoft.Xna.Framework.Game
         _grid = new Grid(GraphicsDevice, 50);
 
         _characterModel = Content.Load<Model>("Models/man");
-        _boneTransforms = new Transform[_characterModel.Bones.Length];
-        _boneTransformMatrices = new Matrix[_characterModel.Bones.Length];
+        var rowSpacing = 1.5f;
+        var colSpacing = 1.0f;
+        for (int rowIndex = 0; rowIndex < CharacterRowCount; ++rowIndex)
+        {
+            for (int colIndex = 0; colIndex < CharacterColCount; ++colIndex)
+            {
+                var transform = Matrix.CreateWorld(
+                    new Vector3(
+                        -(float)(CharacterColCount - 1) * colSpacing / 2 + colIndex * colSpacing, 
+                        0, 
+                        -(float)(CharacterRowCount - 1) * rowSpacing / 2 + rowIndex * rowSpacing
+                    ),
+                    Vector3.Backward,
+                    Vector3.Up
+                );
+                _world.Create(
+                    new Position(transform),
+                    new CharacterState(rowIndex, colIndex, false, false, false),
+                    new AnimationState(),
+                    new BoneTransforms(new Matrix[_characterModel.Bones.Length])
+                );
+            }
+        }
+
         _animationSet = Content.Load<AnimationSet>("Models/man_anims");
 
         _skinnedEffect = Content.Load<Effect>("Effects/SkinnedVertexColoredEffect");
@@ -162,33 +182,13 @@ public class Game : Microsoft.Xna.Framework.Game
 
         _prevKeyboardState = keyboardState;
 
-        // Start each character running based on position.
-        for (int rowIndex = 0; rowIndex < CharacterRowCount; ++rowIndex)
+        // Perform state updates for all characters.
+        var stateSystem = new StateSystem
         {
-            for (int colIndex = 0; colIndex < CharacterColCount; ++colIndex)
-            {
-                if (gameTime.TotalGameTime.TotalSeconds * 10 > rowIndex + colIndex * 1.4)
-                {
-                    _isRunning[rowIndex * CharacterColCount + colIndex] = true;
-                }
-            }
-        }
-
-        // Start one character waving each tick with a random chance.
-        for (int i = 0; i < CharacterCount; ++i)
-        {
-            if (_isWaving[i])
-            {
-                _isWaving[i] = false;
-                continue;
-            }
-
-            if (Random.NextSingle() < 1 / (float)CharacterCount)
-            {
-                _isWaving[i] = true;
-                break;
-            }
-        }
+            GameTime = gameTime,
+            IsHeadDown = _isHeadDown
+        };
+        _world.InlineQuery<StateSystem, CharacterState>(in _stateQuery, ref stateSystem);
     }
 
     protected override void Draw(GameTime gameTime)
@@ -198,93 +198,184 @@ public class Game : Microsoft.Xna.Framework.Game
         GraphicsDevice.DepthStencilState = DepthStencilState.Default;
 
         _grid?.Draw(_cameraView, _cameraProjection);
-        for (int characterIndex = 0; characterIndex < CharacterCount; ++characterIndex)
-        {
-            // TODO: multithreading
-            DrawCharacter(characterIndex, gameTime, _cameraView);
-        }
+        DrawCharacters(gameTime);
 
-        _hud?.Draw(gameTime);
+        _hud.Draw(gameTime);
+
+        _profiler.ProfileDraw(gameTime);
     }
 
-    private void DrawCharacter(int characterIndex, GameTime gameTime, Matrix cameraView)
+    private void DrawCharacters(GameTime gameTime)
     {
-        if (_characterModel == null || _boneTransforms == null || _boneTransformMatrices == null || _skinnedEffect == null)
+        if (_characterModel == null || _skinnedEffect == null)
         {
             return;
         }
 
-        ref var animationState = ref _animationStates[characterIndex];
-        ref var characterTransform = ref _characterTransforms[characterIndex];
-
-        // Select the correct animation.
-        SelectAnimations(characterIndex, ref animationState);
-
-        // Step 1: Initialize the bone transform array with animation transforms.
-        AnimationPlayer.UpdateTime(ref animationState, gameTime);
-        _animationPlayer.SampleBones(ref animationState, ref _animationSet, _characterModel.Bones, _boneTransformMatrices);
-
-        // Step 2: Transform each bone transform by the chain of parent bone transforms.
-        // Note this works because the bones are required to be in order, where parentIndex < i for all bones.
-        // Remember that MonoGame, like most graphics systems, stores transformation matrices as rows instead of columns,
-        // which means that matrix multiplication order is reversed from the mathematical representation to apply transforms.
-        for (int i = 0; i < _boneTransformMatrices.Length; ++i)
+        var animationSystem = new AnimationSystem
         {
-            var parentIndex = _characterModel.Bones[i].ParentIndex;
-            if (parentIndex >= 0)
+            GameTime = gameTime,
+            CharacterModel = _characterModel,
+            AnimationSet = _animationSet,
+        };
+        _world.InlineParallelQuery<AnimationSystem, CharacterState, AnimationState, BoneTransforms>(in _animationQuery, ref animationSystem);
+
+        var drawSystem = new DrawSystem
+        {
+            GraphicsDevice = GraphicsDevice,
+            CameraView = _cameraView,
+            CameraProjection = _cameraProjection,
+            CharacterModel = _characterModel,
+            Effect = _skinnedEffect,
+            Hud = _hud,
+        };
+        _world.InlineQuery<DrawSystem, Position, BoneTransforms>(in _drawQuery, ref drawSystem);
+    }
+
+    private struct StateSystem : IForEach<CharacterState>
+    {
+        public required GameTime GameTime;
+        public required bool IsHeadDown;
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly void Update(ref CharacterState characterState)
+        {
+            // Set each character's head based on the global state.
+            characterState.IsHeadDown = IsHeadDown;
+
+            // Start each character running based on position.
+            if (GameTime.TotalGameTime.TotalSeconds * 10 > characterState.Row + characterState.Col * 1.4)
             {
-                _boneTransformMatrices[i] *= _boneTransformMatrices[parentIndex];
+                characterState.IsRunning = true;
             }
-        }
 
-        // Step 3: Layer on an additional transformation to convert from local coordinate space to model coordinate space
-        // using the inverse bind matrix.
-        for (int i = 0; i < _boneTransformMatrices.Length; ++i)
-        {
-            _boneTransformMatrices[i] = _characterModel.Bones[i].InverseBindMatrix * _boneTransformMatrices[i];
-        }
-
-        // Now draw all components of the model.
-        _skinnedEffect.Parameters["Bones"].SetValue(_boneTransformMatrices);
-        _skinnedEffect.Parameters["World"].SetValue(characterTransform);
-        _skinnedEffect.Parameters["WorldInverseTranspose"].SetValue(Matrix.Transpose(Matrix.Invert(characterTransform)));
-        _skinnedEffect.Parameters["WorldViewProj"].SetValue(characterTransform * cameraView * _cameraProjection);
-        for (int meshIndex = 0; meshIndex < _characterModel.Meshes.Length; ++meshIndex)
-        {
-            var mesh = _characterModel.Meshes[meshIndex];
-            GraphicsDevice.SetVertexBuffer(mesh.VertexBuffer);
-            GraphicsDevice.Indices = mesh.IndexBuffer;
-
-            for (int effectPassIndex = 0; effectPassIndex < _skinnedEffect.CurrentTechnique.Passes.Count; ++effectPassIndex)
+            // Start each character waving with a random chance.
+            if (characterState.IsWaving)
             {
-                _skinnedEffect.CurrentTechnique.Passes[effectPassIndex].Apply();
-                GraphicsDevice.DrawIndexedPrimitives(PrimitiveType.TriangleList, 0, 0, mesh.PrimitiveCount);
-                _hud.CountPolygons(mesh.PrimitiveCount);
+                characterState.IsWaving = false;
+            }
+            else if (Random.NextSingle() < 1 / (float)CharacterCount)
+            {
+                characterState.IsWaving = true;
             }
         }
     }
 
-    private void SelectAnimations(int characterIndex, ref AnimationState animationState)
+    private struct AnimationSystem : IForEach<CharacterState, AnimationState, BoneTransforms>
     {
-        if (_isRunning[characterIndex])
+        private static int _workerCount;
+        private static AnimationPlayer[]? _animationPlayers;
+
+        [ThreadStatic]
+        private static int _workerIndex;
+
+        public required GameTime GameTime;
+        public required Model CharacterModel;
+        public required AnimationSet AnimationSet;
+
+        public static void Initialize(int maxWorkerCount)
         {
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.Base, "run_forward");
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "hand_closed_left");
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "hand_closed_right");
-        }
-        else
-        {
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.Base, "idle");
+            _animationPlayers = new AnimationPlayer[maxWorkerCount];
+            for (int i = 0; i < _animationPlayers.Length; ++i)
+            {
+                _animationPlayers[i] = new();
+            }
         }
 
-        if (_isWaving[characterIndex])
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Update(ref CharacterState characterState, ref AnimationState animationState, ref BoneTransforms boneTransforms)
         {
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.UpperBody, "wave");
+            if (_workerIndex == 0)
+            {
+                _workerIndex = ++_workerCount;
+            }
+
+            var animationPlayer = _animationPlayers![_workerIndex - 1];
+
+            SelectAnimations(ref characterState, ref animationState);
+
+            // Step 1: Initialize the bone transform array with animation transforms.
+            AnimationPlayer.UpdateTime(ref animationState, GameTime);
+            animationPlayer.SampleBones(ref animationState, ref AnimationSet, CharacterModel.Bones, boneTransforms.Matrices);
+
+            // Step 2: Transform each bone transform by the chain of parent bone transforms.
+            // Note this works because the bones are required to be in order, where parentIndex < i for all bones.
+            // Remember that MonoGame, like most graphics systems, stores transformation matrices as rows instead of columns,
+            // which means that matrix multiplication order is reversed from the mathematical representation to apply transforms.
+            for (int i = 0; i < boneTransforms.Matrices.Length; ++i)
+            {
+                var parentIndex = CharacterModel.Bones[i].ParentIndex;
+                if (parentIndex >= 0)
+                {
+                    boneTransforms.Matrices[i] *= boneTransforms.Matrices[parentIndex];
+                }
+            }
+
+            // Step 3: Layer on an additional transformation to convert from local coordinate space to model coordinate space
+            // using the inverse bind matrix.
+            for (int i = 0; i < boneTransforms.Matrices.Length; ++i)
+            {
+                boneTransforms.Matrices[i] = CharacterModel.Bones[i].InverseBindMatrix * boneTransforms.Matrices[i];
+            }
         }
 
-        if (_isHeadDown)
+        private readonly void SelectAnimations(ref CharacterState characterState, ref AnimationState animationState)
         {
-            AnimationPlayer.Play(ref animationState, ref _animationSet, AnimationLayer.AdditiveBase, "head_down");
+            if (characterState.IsRunning)
+            {
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.Base, "run_forward");
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.AdditiveBase, "hand_closed_left");
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.AdditiveBase, "hand_closed_right");
+            }
+            else
+            {
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.Base, "idle");
+            }
+
+            if (characterState.IsWaving)
+            {
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.UpperBody, "wave");
+            }
+
+            if (characterState.IsHeadDown)
+            {
+                AnimationPlayer.Play(ref animationState, AnimationSet, AnimationLayer.AdditiveBase, "head_down");
+            }
+        }
+    }
+    
+    private struct DrawSystem : IForEach<Position, BoneTransforms>
+    {
+        public required GraphicsDevice GraphicsDevice;
+        public required Matrix CameraView;
+        public required Matrix CameraProjection;
+        public required Model CharacterModel;
+        public required Effect Effect;
+        public required HeadsUpDisplay Hud;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly void Update(ref Position position, ref BoneTransforms boneTransforms) {
+            var bonesParam = Effect.Parameters["Bones"];
+            var worldParam = Effect.Parameters["World"];
+            var worldTransposeParam = Effect.Parameters["WorldInverseTranspose"];
+            var worldViewProjParam = Effect.Parameters["WorldViewProj"];
+            bonesParam.SetValue(boneTransforms.Matrices);
+            worldParam.SetValue(position.Transform);
+            worldTransposeParam.SetValue(Matrix.Transpose(Matrix.Invert(position.Transform)));
+            worldViewProjParam.SetValue(position.Transform * CameraView * CameraProjection);
+            for (int meshIndex = 0; meshIndex < CharacterModel.Meshes.Length; ++meshIndex)
+            {
+                var mesh = CharacterModel.Meshes[meshIndex];
+                GraphicsDevice.SetVertexBuffer(mesh.VertexBuffer);
+                GraphicsDevice.Indices = mesh.IndexBuffer;
+
+                for (int effectPassIndex = 0; effectPassIndex < Effect.CurrentTechnique.Passes.Count; ++effectPassIndex)
+                {
+                    Effect.CurrentTechnique.Passes[effectPassIndex].Apply();
+                    GraphicsDevice.DrawIndexedPrimitives(PrimitiveType.TriangleList, 0, 0, mesh.PrimitiveCount);
+                    Hud.CountPolygons(mesh.PrimitiveCount);
+                }
+            }
         }
     }
 }

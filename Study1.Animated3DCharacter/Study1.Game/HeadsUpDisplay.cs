@@ -6,29 +6,22 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace Study1.Game;
 
-public class HeadsUpDisplay
+public class HeadsUpDisplay(Profiler profiler, string instructions)
 {
     private const float UpdateInterval = 0.25f;
     private const int TimestampBufferSize = 30;
 
     private readonly Process _proc = Process.GetCurrentProcess();
+    private readonly StringBuilder _sb = new(instructions.Length + 256);
     private readonly double[] _timestamps = new double[TimestampBufferSize];
     private int _timestampIndex = 0;
     private double _lastUpdateTimestamp = 0;
     private double _fps = 0;
     private int _meshCount = 0;
     private int _polyCount = 0;
-    private StringBuilder _sb;
-    private readonly string _instructions;
 
     private SpriteFont? _font;
     private SpriteBatch? _spriteBatch;
-
-    public HeadsUpDisplay(string instructions)
-    {
-        _sb = new StringBuilder(instructions.Length + 256);
-        _instructions = instructions;
-    }
 
     public void LoadContent(ContentManager content, GraphicsDevice graphicsDevice)
     {
@@ -91,12 +84,16 @@ public class HeadsUpDisplay
         _sb.Append(_polyCount);
         _sb.Append("\nProcess Mem: ");
         _sb.Append(_proc.WorkingSet64);
-        _sb.Append("\nGC Mem: ");
-        _sb.Append(GC.GetTotalMemory(false));
-        _sb.Append("\nGC Count: ");
-        _sb.Append(GC.CollectionCount(0));
+        _sb.Append("\nGC Total Mem: ");
+        _sb.Append(profiler.TotalGcMemory);
+        _sb.Append("\nGC Addl Mem: ");
+        _sb.Append(profiler.AdditionalGcMemory);
+        _sb.Append("\nGC Total Count: ");
+        _sb.Append(profiler.TotalGcCount);
+        _sb.Append("\nGC Addl Count: ");
+        _sb.Append(profiler.AdditionalGcCount);
         _sb.Append("\n\n");
-        _sb.Append(_instructions);
+        _sb.Append(instructions);
 
         // Draw the display.
         if (_spriteBatch != null && _font != null)
