@@ -147,7 +147,7 @@ public class Game : Microsoft.Xna.Framework.Game
         _animationPlayer.UpdateTime(gameTime);
         for (int i = 0; i < _characterModel.Bones.Count; ++i)
         {
-            _animationPlayer.SetBoneTransform(_characterModel.Bones[i], ref _characterBoneTransforms[i]);
+            _animationPlayer.SetBoneTransform(_characterModel.Bones[i], out _characterBoneTransforms[i]);
         }
 
         // Step 2: Transform each bone transform by the chain of parent bone transforms.
