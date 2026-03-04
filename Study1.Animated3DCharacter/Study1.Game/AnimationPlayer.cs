@@ -1,16 +1,25 @@
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Microsoft.Xna.Framework;
 using Study1.ContentFramework.Math;
 using Study1.ContentFramework.Models;
 
 namespace Study1.Game;
 
-public struct AnimationPlayer(AnimationSet animationSet)
+public class AnimationPlayer
 {
+    private const int MaxBoneCount = 72;
     private const float DefaultTransitionDuration = 0.15f;
     private const float DefaultFadeDuration = 0.15f;
     private static readonly Vector3 Vector3One = Vector3.One;
     private static readonly Quaternion QuaternionIdentity = Quaternion.Identity;
+
+    private readonly Transform[] ScratchBoneTransforms = new Transform[MaxBoneCount];
+    private readonly Transform[] ScratchAdditiveAccumulationTransforms = new Transform[MaxBoneCount];
+    private readonly BitArray HasScratchAdditiveAccumulationTranslation = new(MaxBoneCount);
+    private readonly BitArray HasScratchAdditiveAccumulationRotation = new(MaxBoneCount);
+    private readonly BitArray HasScratchAdditiveAccumulationScale = new(MaxBoneCount);
 
     private struct AnimationChannelState
     {
@@ -26,10 +35,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         public Vector3 Scale { get; set; }
     }
 
-    private readonly AnimationSet animationSet = animationSet;
-    private AnimationState state;
-
-    public void Play(
+    public static void Play(
+        ref AnimationState state,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight = 1.0f,
@@ -38,15 +46,15 @@ public struct AnimationPlayer(AnimationSet animationSet)
     {
         if (animationSet.AnimationLayerDefinitions.IsAdditiveLayer(layer))
         {
-            PlayAdditive(layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayAdditive(ref state, in animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
         else
         {
-            PlayOverride(layer, animation, weight, playbackSpeed, transitionDuration);
+            PlayOverride(ref state, in animationSet, layer, animation, weight, playbackSpeed, transitionDuration);
         }
     }
 
-    public void Stop(AnimationLayer? layer = null, float fadeDuration = DefaultFadeDuration)
+    public static void Stop(ref AnimationState state, ref AnimationSet animationSet, AnimationLayer? layer = null, float fadeDuration = DefaultFadeDuration)
     {
         if (layer.HasValue)
         {
@@ -71,9 +79,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    public void UpdateTime(GameTime gameTime)
+    public static void UpdateTime(ref AnimationState state, GameTime gameTime)
     {
-        ResolveAdditiveClips();
+        ResolveAdditiveClips(ref state);
 
         var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
         for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxOverrideLayerCount; ++layerIndex)
@@ -90,46 +98,34 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    public void SampleBone(Bone bone, out Matrix result)
+    public void SampleBones(ref AnimationState state, ref AnimationSet animationSet, Span<Bone> bones, Span<Matrix> boneMatrices)
     {
-        // Check if this bone from the model exists in the animation set.
-        var isBoneInAnimationSet = animationSet.TryGetBoneIndex(bone.Name, out var boneIndex);
-        if (!isBoneInAnimationSet)
-        {
-            bone.LocalTransform.ToMatrix(out result);
-            return;
-        }
-        
-        Transform boneTransform = new();
-        Transform tempTransform = new();
-
         // Step 1: Sample and combine override layers.
-        if (!SampleOverrideLayers(0, boneIndex, in bone.LocalTransform, ref boneTransform))
+        for (int layerIndex = 0; layerIndex < animationSet.AnimationLayerDefinitions.OverrideLayerCount; ++layerIndex)
         {
-            boneTransform = bone.LocalTransform;
-        }
-        for (int layerIndex = 1; layerIndex < animationSet.AnimationLayerDefinitions.OverrideLayerCount; ++layerIndex)
-        {
-            if (SampleOverrideLayers(layerIndex, boneIndex, in bone.LocalTransform, ref tempTransform))
-            {
-                Interpolate(in boneTransform, in tempTransform, state.OverrideLayers[layerIndex].Weight, out boneTransform);
-            }
+            SampleOverrideLayer(ref state, ref animationSet, layerIndex, bones);
         }
 
-        // Step 2: Sample and accumulate additive layers.
-        tempTransform = Transform.Identity;
+        // Step 2: Sample and apply additive layers.
+        HasScratchAdditiveAccumulationTranslation.SetAll(false);
+        HasScratchAdditiveAccumulationRotation.SetAll(false);
+        HasScratchAdditiveAccumulationScale.SetAll(false);
         for (int layerIndex = 0; layerIndex < animationSet.AnimationLayerDefinitions.AdditiveLayerCount; ++layerIndex)
         {
-            if (SampleAdditiveLayers(layerIndex, boneIndex, ref bone.LocalTransform, ref tempTransform))
-            {
-                ApplyAdditive(ref boneTransform, ref tempTransform);
-            }
+            SampleAdditiveLayer(ref state, ref animationSet, layerIndex, bones);
         }
+        ApplyAdditiveDeltas(bones);
 
-        boneTransform.ToMatrix(out result);
+        // Step 3: Convert scratch transforms to matrices.
+        for (int boneIndex = 0; boneIndex < bones.Length; ++boneIndex)
+        {
+            ScratchBoneTransforms[boneIndex].ToMatrix(out boneMatrices[boneIndex]);
+        }
     }
 
-    private void PlayOverride(
+    private static void PlayOverride(
+        ref AnimationState state,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -142,7 +138,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         if (resolvedAnimation != layerState.Animation)
         {
             // It's a new animation, but we already had one playing. Transition from the previous one.
-            SnapshotTransitionState(layerIndex, transitionDuration);
+            SnapshotTransitionState(ref state, layerIndex, transitionDuration);
 
             // Then start the new animation.
             layerState.Animation = animationSet.GetAnimation(animation);
@@ -164,7 +160,9 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void PlayAdditive(
+    private static void PlayAdditive(
+        ref AnimationState state,
+        in AnimationSet animationSet,
         AnimationLayer layer,
         string animation,
         float weight,
@@ -188,7 +186,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         };
     }
 
-    private void StopOverrideLayer(ref OverrideLayerState layerState, float fadeDuration = DefaultFadeDuration)
+    private static void StopOverrideLayer(ref OverrideLayerState layerState, float fadeDuration = DefaultFadeDuration)
     {
         if (fadeDuration == 0)
         {
@@ -207,7 +205,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void StopAdditiveClip(ref AdditiveClipState clipState, float fadeDuration = DefaultFadeDuration)
+    private static void StopAdditiveClip(ref AdditiveClipState clipState, float fadeDuration = DefaultFadeDuration)
     {
         if (fadeDuration == 0)
         {
@@ -225,15 +223,17 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void ResolveAdditiveClips()
+    private static void ResolveAdditiveClips(ref AnimationState state)
     {
+        Span<bool> isClipMatched = stackalloc bool[AdditiveLayerState.MaxAdditiveClipCount];
+        Span<bool> isSlotMatched = stackalloc bool[AdditiveLayerState.MaxAdditiveClipCount];
         for (int layerIndex = 0; layerIndex < AnimationLayerDefinitions.MaxAdditiveLayerCount; ++layerIndex)
         {
             ref var layerState = ref state.AdditiveLayers[layerIndex];
+            isClipMatched.Clear();
+            isSlotMatched.Clear();
 
             // Find which desired animations are already playing, and which slots are already occupied.
-            var isClipMatched = new AdditiveLayerState.ClipFlags();
-            var isSlotMatched = new AdditiveLayerState.ClipFlags();
             for (int clipIndex = 0; clipIndex < layerState.RequestedClipIndex; ++clipIndex)
             {
                 // Perform a small linear scan to search for the requested animation in the current slots.
@@ -300,7 +300,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void UpdateOverrideLayerTime(ref OverrideLayerState layerState, float dt)
+    private static void UpdateOverrideLayerTime(ref OverrideLayerState layerState, float dt)
     {
         if (layerState.Animation == null && layerState.TransitionAnimation == null)
         {
@@ -382,7 +382,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private void UpdateAdditiveClipTime(ref AdditiveClipState clipState, float dt)
+    private static void UpdateAdditiveClipTime(ref AdditiveClipState clipState, float dt)
     {
         if (clipState.Animation == null)
         {
@@ -451,73 +451,144 @@ public struct AnimationPlayer(AnimationSet animationSet)
         }
     }
 
-    private bool SampleOverrideLayers(int layerIndex, int boneIndex, in Transform boneLocalTransform, ref Transform outTransform)
+    private void SampleOverrideLayer(
+        ref AnimationState state,
+        ref AnimationSet animationSet,
+        int layerIndex,
+        Span<Bone> bones)
     {
         ref OverrideLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetOverrideLayer(layerIndex);
         ref OverrideLayerState layerState = ref state.OverrideLayers[layerIndex];
 
         if ((layerState.Animation == null && layerState.TransitionAnimation == null)
-            || layerState.Weight == 0
-            || (layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex]))
+            || layerState.Weight == 0)
         {
-            return false;
+            if (layerIndex == 0)
+            {
+                for (int boneIndex = 0; boneIndex < bones.Length; ++boneIndex)
+                {
+                    ScratchBoneTransforms[boneIndex] = bones[boneIndex].LocalTransform;
+                }
+            }
+            return;
         }
 
-        if (layerState.TransitionAnimation == null)
+        var prevTranslationIndex = 0;
+        var prevRotationIndex = 0;
+        var prevScaleIndex = 0;
+        var currTranslationIndex = 0;
+        var currRotationIndex = 0;
+        var currScaleIndex = 0;
+        for (int boneIndex = 0; boneIndex < bones.Length; ++boneIndex)
         {
-            bool isBoneInCurr = TryGetAnimationBoneIndex(layerState.Animation, boneIndex, out var currAnimBoneIndex);
-            if (!isBoneInCurr)
+            if (layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex])
             {
-                return false;
+                if (layerIndex == 0)
+                {
+                    ScratchBoneTransforms[boneIndex] = bones[boneIndex].LocalTransform;
+                }
+                continue;
+            }
+
+            // Sample the previous animation if the bone is active in each channel.
+            var prevTransform = bones[boneIndex].LocalTransform;
+            if (layerState.TransitionAnimation != null
+                && TryGetAnimationBoneIndex(layerState.TransitionAnimation, boneIndex, out var prevBoneIndex))
+            {
+                SampleBoneTranslation(
+                    layerState.TransitionAnimation,
+                    ref prevTranslationIndex,
+                    prevBoneIndex,
+                    layerState.TransitionTime,
+                    layerState.TransitionPlaybackSpeed,
+                    ref prevTransform.Translation
+                );
+                SampleBoneRotation(
+                    layerState.TransitionAnimation,
+                    ref prevRotationIndex,
+                    prevBoneIndex,
+                    layerState.TransitionTime,
+                    layerState.TransitionPlaybackSpeed,
+                    ref prevTransform.Rotation
+                );
+                SampleBoneScale(
+                    layerState.TransitionAnimation,
+                    ref prevScaleIndex,
+                    prevBoneIndex,
+                    layerState.TransitionTime,
+                    layerState.TransitionPlaybackSpeed,
+                    ref prevTransform.Scale
+                );
             }
             
-            SampleAnimation(layerState.Animation!, currAnimBoneIndex, layerState.Time, layerState.PlaybackSpeed, out outTransform);
-            return true;
-        }
-        else
-        {
-            bool isBoneInPrev = TryGetAnimationBoneIndex(layerState.TransitionAnimation, boneIndex, out var prevAnimBoneIndex);
-            bool isBoneInCurr = TryGetAnimationBoneIndex(layerState.Animation, boneIndex, out var currAnimBoneIndex);
-            if (!isBoneInPrev && !isBoneInCurr)
+            // Sample the current animation if the bone is active in each channel.
+            var currTransform = bones[boneIndex].LocalTransform;
+            if (layerState.Animation != null
+                && TryGetAnimationBoneIndex(layerState.Animation, boneIndex, out var currBoneIndex))
             {
-                return false;
+                SampleBoneTranslation(
+                    layerState.Animation,
+                    ref currTranslationIndex,
+                    currBoneIndex,
+                    layerState.Time,
+                    layerState.PlaybackSpeed,
+                    ref currTransform.Translation
+                );
+                SampleBoneRotation(
+                    layerState.Animation,
+                    ref currRotationIndex,
+                    currBoneIndex,
+                    layerState.Time,
+                    layerState.PlaybackSpeed,
+                    ref currTransform.Rotation
+                );
+                SampleBoneScale(
+                    layerState.Animation,
+                    ref currScaleIndex,
+                    currBoneIndex,
+                    layerState.Time,
+                    layerState.PlaybackSpeed,
+                    ref currTransform.Scale
+                );
             }
-
-            Transform prevTransform, currTransform;
-            if (isBoneInPrev)
+            
+            // Blend the previous and current animations for this layer.
+            ref Transform layerTransform = ref currTransform;
+            if (layerState.TransitionAnimation == null)
             {
-                SampleAnimation(layerState.TransitionAnimation!, prevAnimBoneIndex, layerState.TransitionTime, layerState.PlaybackSpeed, out prevTransform);
+                // Leave the transform pointing to the current animation's transform.
+            }
+            else if (layerState.Animation == null)
+            {
+                layerTransform = prevTransform;
             }
             else
             {
-                prevTransform = boneLocalTransform;
+                var progress = 1 - (layerState.TransitionRemainingDuration / layerState.TransitionTotalDuration);
+                Interpolate(in prevTransform, in currTransform, progress, out layerTransform);
             }
-            if (isBoneInCurr)
+
+            // Accumulate this layer's transform into the total.            
+            if (layerIndex == 0)
             {
-                SampleAnimation(layerState.Animation!, currAnimBoneIndex, layerState.Time, layerState.PlaybackSpeed, out currTransform);
+                ScratchBoneTransforms[boneIndex] = layerTransform;
             }
             else
             {
-                currTransform = boneLocalTransform;
+                Interpolate(in ScratchBoneTransforms[boneIndex], in layerTransform, state.OverrideLayers[layerIndex].Weight, out ScratchBoneTransforms[boneIndex]);
             }
-
-            var progress = 1 - (layerState.TransitionRemainingDuration / layerState.TransitionTotalDuration);
-            Interpolate(in prevTransform, in currTransform, progress, out outTransform);
-            return true;
         }
     }
 
-    private bool SampleAdditiveLayers(int layerIndex, int boneIndex, ref Transform boneLocalTransform, ref Transform accumulatedTransform)
+    private void SampleAdditiveLayer(
+        ref AnimationState state,
+        ref AnimationSet animationSet,
+        int layerIndex,
+        Span<Bone> bones)
     {
         ref AdditiveLayerDefinition layerDef = ref animationSet.AnimationLayerDefinitions.GetAdditiveLayer(layerIndex);
         ref AdditiveLayerState layerState = ref state.AdditiveLayers[layerIndex];
-
-        if (layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex])
-        {
-            return false;
-        }
-
-        bool isBoneInLayer = false;
+        
         for (int clipIndex = 0; clipIndex < AdditiveLayerState.MaxAdditiveClipCount; ++clipIndex)
         {
             ref AdditiveClipState clipState = ref layerState.Clips[clipIndex];
@@ -526,20 +597,205 @@ public struct AnimationPlayer(AnimationSet animationSet)
                 continue;
             }
 
-            var isBoneInAnim = TryGetAnimationBoneIndex(clipState.Animation, boneIndex, out var animBoneIndex);
-            if (!isBoneInAnim)
+            var translationIndex = 0;
+            var rotationIndex = 0;
+            var scaleIndex = 0;
+            var tempTransform = new Transform();
+            for (int boneIndex = 0; boneIndex < bones.Length; ++boneIndex)
             {
-                continue;
+                if ((layerDef.BoneMask != null && !layerDef.BoneMask[boneIndex])
+                    || !TryGetAnimationBoneIndex(clipState.Animation, boneIndex, out var animBoneIndex))
+                {
+                    continue;
+                }
+
+                ref var boneLocalTransform = ref bones[boneIndex].LocalTransform;
+                if (SampleBoneTranslation(
+                    clipState.Animation,
+                    ref translationIndex,
+                    animBoneIndex,
+                    clipState.Time,
+                    clipState.PlaybackSpeed,
+                    ref tempTransform.Translation))
+                {
+                    ComputeAdditiveTranslationDelta(ref tempTransform.Translation, ref boneLocalTransform.Translation, clipState.Weight, out var delta);
+                    if (HasScratchAdditiveAccumulationTranslation[boneIndex])
+                    {
+                        AccumulateAdditiveTranslation(ref ScratchAdditiveAccumulationTransforms[boneIndex], ref delta);
+                    }
+                    else
+                    {
+                        ScratchAdditiveAccumulationTransforms[boneIndex].Translation = delta;
+                        HasScratchAdditiveAccumulationTranslation[boneIndex] = true;
+                    }
+                }
+                if (SampleBoneRotation(
+                    clipState.Animation,
+                    ref rotationIndex,
+                    animBoneIndex,
+                    clipState.Time,
+                    clipState.PlaybackSpeed,
+                    ref tempTransform.Rotation))
+                {
+                    ComputeAdditiveRotationDelta(ref tempTransform.Rotation, ref boneLocalTransform.Rotation, clipState.Weight, out var delta);
+                    if (HasScratchAdditiveAccumulationRotation[boneIndex])
+                    {
+                        AccumulateAdditiveRotation(ref ScratchAdditiveAccumulationTransforms[boneIndex], ref delta);
+                    }
+                    else
+                    {
+                        ScratchAdditiveAccumulationTransforms[boneIndex].Rotation = delta;
+                        HasScratchAdditiveAccumulationRotation[boneIndex] = true;
+                    }
+                }
+                if (SampleBoneScale(
+                    clipState.Animation,
+                    ref scaleIndex,
+                    animBoneIndex,
+                    clipState.Time,
+                    clipState.PlaybackSpeed,
+                    ref tempTransform.Scale))
+                {
+                    ComputeAdditiveScaleDelta(ref tempTransform.Scale, ref boneLocalTransform.Scale, clipState.Weight, out var delta);
+                    if (HasScratchAdditiveAccumulationScale[boneIndex])
+                    {
+                        AccumulateAdditiveScale(ref ScratchAdditiveAccumulationTransforms[boneIndex], ref delta);
+                    }
+                    else
+                    {
+                        ScratchAdditiveAccumulationTransforms[boneIndex].Scale = delta;
+                        HasScratchAdditiveAccumulationScale[boneIndex] = true;
+                    }
+                }
             }
-
-            SampleAnimation(clipState.Animation, animBoneIndex, clipState.Time, clipState.PlaybackSpeed, out var transform);
-            ComputeAdditiveDelta(ref transform, ref boneLocalTransform, out var delta);
-
-            AccumulateAdditive(ref accumulatedTransform, ref delta, clipState.Weight);
-            isBoneInLayer = true;
         }
+    }
 
-        return isBoneInLayer;
+    private void ApplyAdditiveDeltas(Span<Bone> bones)
+    {
+        for (int boneIndex = 0; boneIndex < bones.Length; ++boneIndex)
+        {
+            if (HasScratchAdditiveAccumulationTranslation[boneIndex])
+            {
+                ApplyAdditiveTranslation(ref ScratchBoneTransforms[boneIndex], ref ScratchAdditiveAccumulationTransforms[boneIndex]);
+            }
+            if (HasScratchAdditiveAccumulationRotation[boneIndex])
+            {
+                ApplyAdditiveRotation(ref ScratchBoneTransforms[boneIndex], ref ScratchAdditiveAccumulationTransforms[boneIndex]);
+            }
+            if (HasScratchAdditiveAccumulationScale[boneIndex])
+            {
+                ApplyAdditiveScale(ref ScratchBoneTransforms[boneIndex], ref ScratchAdditiveAccumulationTransforms[boneIndex]);
+            }
+        }
+    }
+
+    private static bool SampleBoneTranslation(
+        Animation? animation,
+        ref int lastChannelIndex,
+        int animationBoneIndex,
+        float time,
+        float playbackSpeed,
+        ref Vector3 result)
+    {
+        while (lastChannelIndex < animation?.TranslationChannels?.Length)
+        {
+            if (animation.TranslationChannels?[lastChannelIndex].BoneIndex < animationBoneIndex)
+            {
+                ++lastChannelIndex;
+            }
+            else
+            {
+                if (animation.TranslationChannels?[lastChannelIndex].BoneIndex == animationBoneIndex)
+                {
+                    ref var channel = ref animation.TranslationChannels[lastChannelIndex];
+                    var frameIndex = FindFrameIndex(channel.Keyframes, time, playbackSpeed);
+                    SampleChannel(
+                        channel.Keyframes,
+                        animation.DurationInSeconds,
+                        frameIndex,
+                        time,
+                        playbackSpeed,
+                        out result
+                    );
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static bool SampleBoneRotation(
+        Animation? animation,
+        ref int lastChannelIndex,
+        int animationBoneIndex,
+        float time,
+        float playbackSpeed,
+        ref Quaternion result)
+    {
+        while (lastChannelIndex < animation?.RotationChannels?.Length)
+        {
+            if (animation.RotationChannels?[lastChannelIndex].BoneIndex < animationBoneIndex)
+            {
+                ++lastChannelIndex;
+            }
+            else
+            {
+                if (animation.RotationChannels?[lastChannelIndex].BoneIndex == animationBoneIndex)
+                {
+                    ref var channel = ref animation.RotationChannels[lastChannelIndex];
+                    var frameIndex = FindFrameIndex(channel.Keyframes, time, playbackSpeed);
+                    SampleChannel(
+                        channel.Keyframes,
+                        animation.DurationInSeconds,
+                        frameIndex,
+                        time,
+                        playbackSpeed,
+                        out result
+                    );
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static bool SampleBoneScale(
+        Animation? animation,
+        ref int lastChannelIndex,
+        int animationBoneIndex,
+        float time,
+        float playbackSpeed,
+        ref Vector3 result)
+    {
+        while (lastChannelIndex < animation?.ScaleChannels?.Length)
+        {
+            if (animation.ScaleChannels?[lastChannelIndex].BoneIndex < animationBoneIndex)
+            {
+                ++lastChannelIndex;
+            }
+            else
+            {
+                if (animation.ScaleChannels?[lastChannelIndex].BoneIndex == animationBoneIndex)
+                {
+                    ref var channel = ref animation.ScaleChannels[lastChannelIndex];
+                    var frameIndex = FindFrameIndex(channel.Keyframes, time, playbackSpeed);
+                    SampleChannel(
+                        channel.Keyframes,
+                        animation.DurationInSeconds,
+                        frameIndex,
+                        time,
+                        playbackSpeed,
+                        out result
+                    );
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
     }
 
     private static bool TryGetAnimationBoneIndex([NotNullWhen(true)] Animation? animation, int animationSetBoneIndex, out int animationBoneIndex)
@@ -554,78 +810,64 @@ public struct AnimationPlayer(AnimationSet animationSet)
         return animationBoneIndex != -1;
     }
 
-    private static void SampleAnimation(Animation animation, int animationBoneIndex, float time, float playbackSpeed, out Transform transform)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ComputeAdditiveTranslationDelta(ref Vector3 additive, ref Vector3 reference, float weight, out Vector3 delta)
     {
-        var translationFrameIndex = FindFrameIndex(
-            animation.BoneChannels[animationBoneIndex].Translations.Keyframes,
-            time,
-            playbackSpeed
-        );
-        var rotationFrameIndex = FindFrameIndex(
-            animation.BoneChannels[animationBoneIndex].Rotations.Keyframes,
-            time,
-            playbackSpeed
-        );
-        var scaleFrameIndex = FindFrameIndex(
-            animation.BoneChannels[animationBoneIndex].Scales.Keyframes,
-            time,
-            playbackSpeed
-        );
-
-        SampleChannel(
-            animation.BoneChannels[animationBoneIndex].Translations.Keyframes,
-            animation.DurationInSeconds,
-            translationFrameIndex,
-            time,
-            playbackSpeed,
-            out transform.Translation
-        );
-        SampleChannel(
-            animation.BoneChannels[animationBoneIndex].Rotations.Keyframes,
-            animation.DurationInSeconds,
-            rotationFrameIndex,
-            time,
-            playbackSpeed,
-            out transform.Rotation
-        );
-        SampleChannel(
-            animation.BoneChannels[animationBoneIndex].Scales.Keyframes,
-            animation.DurationInSeconds,
-            scaleFrameIndex,
-            time,
-            playbackSpeed,
-            out transform.Scale
-        );
+        Vector3.Subtract(ref additive, ref reference, out delta);
+        Vector3.Multiply(ref delta, weight, out delta);
     }
 
-    private static void ComputeAdditiveDelta(ref Transform pose, ref Transform reference, out Transform delta) {
-        Vector3.Subtract(ref pose.Translation, ref reference.Translation, out delta.Translation);
-
-        Quaternion.Inverse(ref reference.Rotation, out delta.Rotation);
-        Quaternion.Multiply(ref delta.Rotation, ref pose.Rotation, out delta.Rotation);
-
-        Vector3.Divide(ref pose.Scale, ref reference.Scale, out delta.Scale);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ComputeAdditiveRotationDelta(ref Quaternion additive, ref Quaternion reference, float weight, out Quaternion delta)
+    {
+        Quaternion.Inverse(ref reference, out delta);
+        Quaternion.Multiply(ref delta, ref additive, out delta);
+        Interpolate(in QuaternionIdentity, in delta, weight, out delta);
     }
 
-    private static void AccumulateAdditive(ref Transform transform, ref Transform delta, float weight) {
-        Vector3.Multiply(ref delta.Translation, weight, out delta.Translation);
-        Vector3.Add(ref transform.Translation, ref delta.Translation, out transform.Translation);
-
-        Interpolate(in QuaternionIdentity, in delta.Rotation, weight, out delta.Rotation);
-        Quaternion.Multiply(ref transform.Rotation, ref delta.Rotation, out transform.Rotation);
-        Quaternion.Normalize(ref transform.Rotation, out transform.Rotation);
-
-        Interpolate(in Vector3One, in delta.Scale, weight, out delta.Scale);
-        Vector3.Multiply(ref transform.Scale, ref delta.Scale, out transform.Scale);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ComputeAdditiveScaleDelta(ref Vector3 additive, ref Vector3 reference, float weight, out Vector3 delta)
+    {
+        Vector3.Divide(ref additive, ref reference, out delta);
+        Interpolate(in Vector3One, in delta, weight, out delta);
     }
 
-    private static void ApplyAdditive(ref Transform transform, ref Transform delta)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AccumulateAdditiveTranslation(ref Transform transform, ref Vector3 delta)
+    {
+        Vector3.Add(ref transform.Translation, ref delta, out transform.Translation);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AccumulateAdditiveRotation(ref Transform transform, ref Quaternion delta)
+    {
+        Quaternion.Multiply(ref transform.Rotation, ref delta, out transform.Rotation);
+        // Quaternion.Normalize(ref transform.Rotation, out transform.Rotation); TODO: can this be removed?
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AccumulateAdditiveScale(ref Transform transform, ref Vector3 delta)
+    {
+        Vector3.Multiply(ref transform.Scale, ref delta, out transform.Scale);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ApplyAdditiveTranslation(ref Transform transform, ref Transform delta)
     {
         Vector3.Add(ref transform.Translation, ref delta.Translation, out transform.Translation);
+    }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ApplyAdditiveRotation(ref Transform transform, ref Transform delta)
+    {
+        Quaternion.Normalize(ref delta.Rotation, out delta.Rotation); // TODO: is this ok to keep?
         Quaternion.Multiply(ref transform.Rotation, ref delta.Rotation, out transform.Rotation);
         Quaternion.Normalize(ref transform.Rotation, out transform.Rotation);
+    }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ApplyAdditiveScale(ref Transform transform, ref Transform delta)
+    {
         Vector3.Multiply(ref transform.Scale, ref delta.Scale, out transform.Scale);
     }
 
@@ -794,7 +1036,7 @@ public struct AnimationPlayer(AnimationSet animationSet)
     private static float MeasureTimeDistance(float totalDuration, float firstTime, float secondTime)
         => firstTime <= secondTime ? secondTime - firstTime : totalDuration - firstTime + secondTime;
 
-    private void SnapshotTransitionState(int layerIndex, float transitionDuration)
+    private static void SnapshotTransitionState(ref AnimationState state, int layerIndex, float transitionDuration)
     {
         ref var layerState = ref state.OverrideLayers[layerIndex];
         if (transitionDuration <= 0 || layerState.Animation == null)

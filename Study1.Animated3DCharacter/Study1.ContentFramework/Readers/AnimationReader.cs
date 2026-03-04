@@ -19,43 +19,80 @@ public class AnimationReader : ContentTypeReader<Animation>
             boneIndexMapping[boneIndex] = input.ReadInt32();
         }
 
-        var boneChannelCount = input.ReadUInt32();
-        var boneChannels = new BoneChannel[boneChannelCount];
-        for (int boneChannelIndex = 0; boneChannelIndex < boneChannelCount; ++boneChannelIndex)
+        BoneChannel<Vector3>[]? translationChannels = null;
+        var translationChannelCount = input.ReadUInt32();
+        if (translationChannelCount > 0)
         {
-            var boneName = input.ReadString();
-
-            var translationCount = input.ReadUInt32();
-            var translationFrames = new Keyframe<Vector3>[translationCount];
-            for (int frameIndex = 0; frameIndex < translationCount; ++frameIndex)
+            translationChannels = new BoneChannel<Vector3>[translationChannelCount];
+            for (int channelIndex = 0; channelIndex < translationChannelCount; ++channelIndex)
             {
-                var frameTime = input.ReadSingle();
-                var frameValue = input.ReadVector3();
-                translationFrames[frameIndex] = new Keyframe<Vector3>(frameTime, frameValue);
-            }
+                var boneIndex = input.ReadInt32();
+                var keyframeCount = input.ReadUInt32();
+                var keyframes = new Keyframe<Vector3>[keyframeCount];
+                for (int frameIndex = 0; frameIndex < keyframeCount; ++frameIndex)
+                {
+                    var frameTime = input.ReadSingle();
+                    var frameValue = input.ReadVector3();
+                    keyframes[frameIndex] = new Keyframe<Vector3>(frameTime, frameValue);
+                }
 
-            var rotationCount = input.ReadUInt32();
-            var rotationFrames = new Keyframe<Quaternion>[rotationCount];
-            for (int frameIndex = 0; frameIndex < rotationCount; ++frameIndex)
-            {
-                var frameTime = input.ReadSingle();
-                var frameValue = input.ReadQuaternion();
-                rotationFrames[frameIndex] = new Keyframe<Quaternion>(frameTime, frameValue);
+                translationChannels[channelIndex] = new BoneChannel<Vector3>
+                {
+                    BoneIndex = boneIndex,
+                    Keyframes = keyframes,
+                };
             }
-
-            var scaleCount = input.ReadUInt32();
-            var scaleFrames = new Keyframe<Vector3>[scaleCount];
-            for (int frameIndex = 0; frameIndex < scaleCount; ++frameIndex)
-            {
-                var frameTime = input.ReadSingle();
-                var frameValue = input.ReadVector3();
-                scaleFrames[frameIndex] = new Keyframe<Vector3>(frameTime, frameValue);
-            }
-
-            boneChannels[boneChannelIndex] = new BoneChannel(boneName, translationFrames, rotationFrames, scaleFrames);
         }
 
-        var defaultLayer = (AnimationLayer)input.ReadUInt32();
+        BoneChannel<Quaternion>[]? rotationChannels = null;
+        var rotationChannelCount = input.ReadUInt32();
+        if (rotationChannelCount > 0)
+        {
+            rotationChannels = new BoneChannel<Quaternion>[rotationChannelCount];
+            for (int channelIndex = 0; channelIndex < rotationChannelCount; ++channelIndex)
+            {
+                var boneIndex = input.ReadInt32();
+                var keyframeCount = input.ReadUInt32();
+                var keyframes = new Keyframe<Quaternion>[keyframeCount];
+                for (int frameIndex = 0; frameIndex < keyframeCount; ++frameIndex)
+                {
+                    var frameTime = input.ReadSingle();
+                    var frameValue = input.ReadQuaternion();
+                    keyframes[frameIndex] = new Keyframe<Quaternion>(frameTime, frameValue);
+                }
+
+                rotationChannels[channelIndex] = new BoneChannel<Quaternion>
+                {
+                    BoneIndex = boneIndex,
+                    Keyframes = keyframes,
+                };
+            }
+        }
+
+        BoneChannel<Vector3>[]? scaleChannels = null;
+        var scaleChannelCount = input.ReadUInt32();
+        if (scaleChannelCount > 0)
+        {
+            scaleChannels = new BoneChannel<Vector3>[scaleChannelCount];
+            for (int channelIndex = 0; channelIndex < scaleChannelCount; ++channelIndex)
+            {
+                var boneIndex = input.ReadInt32();
+                var keyframeCount = input.ReadUInt32();
+                var keyframes = new Keyframe<Vector3>[keyframeCount];
+                for (int frameIndex = 0; frameIndex < keyframeCount; ++frameIndex)
+                {
+                    var frameTime = input.ReadSingle();
+                    var frameValue = input.ReadVector3();
+                    keyframes[frameIndex] = new Keyframe<Vector3>(frameTime, frameValue);
+                }
+
+                scaleChannels[channelIndex] = new BoneChannel<Vector3>
+                {
+                    BoneIndex = boneIndex,
+                    Keyframes = keyframes,
+                };
+            }
+        }
 
         return new Animation
         {
@@ -63,8 +100,9 @@ public class AnimationReader : ContentTypeReader<Animation>
             DurationInSeconds = durationInSeconds,
             WrapMode = wrapMode,
             BoneIndexMapping = boneIndexMapping,
-            BoneChannels = boneChannels,
-            DefaultLayer = defaultLayer,
+            TranslationChannels = translationChannels,
+            RotationChannels = rotationChannels,
+            ScaleChannels = scaleChannels,
         };
     }
 }
