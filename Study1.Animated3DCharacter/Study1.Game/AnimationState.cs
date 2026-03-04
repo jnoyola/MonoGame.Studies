@@ -68,12 +68,6 @@ public struct AdditiveLayerState
         private AdditiveClipRequest _element0;
     }
 
-    [InlineArray(MaxAdditiveClipCount)]
-    public struct ClipFlags
-    {
-        private bool _element0;
-    }
-
     // Currently playing clips.
     public AdditiveClipStates Clips;
 

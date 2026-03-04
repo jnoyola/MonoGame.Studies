@@ -11,6 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Arch" Version="2.1.0" />
     <PackageReference Include="MonoGame.Framework.Native" Version="3.8.5-develop.*">
       <PrivateAssets>All</PrivateAssets>
     </PackageReference>
