@@ -40,11 +40,13 @@ This study includes the following:
 ### Stage 1.3: Performance
 
 This stage dives into performance optimizations that reduce pose calculation time and crank up frames per
-second. Depending on hardware, these optimizations could provide ~20% increase in performance.
+second. Depending on hardware, these optimizations could provide 5x increase in performance for a large
+number of animated characters.
 
 This study includes the following:
 1. A testbed for performance, animating 1000 individual characters with layered animations
 2. Pruning animation channels that are not animated
+3. Parallelism via multithreaded ECS
 
 ## Future Studies
 
