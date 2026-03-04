@@ -47,6 +47,10 @@ This study includes the following:
 
 ### Stage 1.3: Performance
 
+<p align="center">
+<img src="./Docs/Images/study-1.3.png" width="600" />
+</p>
+
 This stage dives into performance optimizations that reduce pose calculation time and crank up frames per
 second. Depending on hardware, these optimizations could provide 5x increase in performance for a large
 number of animated characters.
