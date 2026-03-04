@@ -12,6 +12,10 @@ A series of studies in MonoGame. Building up game techniques and tools one step 
 
 ### Stage 1.1: Skinned Low-Poly Character
 
+<p align="center">
+<img src="./Docs/Images/study-1.1.png" width="600" />
+</p>
+
 We start with rendering a skinned 3D character with simple skeletal animations.
 In MonoGame this can be done using the built-in `SkinnedEffect` for textured models.
 However, we are going to use a low-poly, flat-shaded character which looks best with vertex coloring.
@@ -25,6 +29,10 @@ This study includes the following:
 4. Rendering the character with vertex colors and bone transforms
 
 ### Stage 1.2: Blended Animations
+
+<p align="center">
+<img src="./Docs/Images/study-1.2.png" width="600" />
+</p>
 
 This stage adds a lot of complexity to the animation definitions, animation player, and state.
 We are no longer limited to playing a single animation on the character's entire skeleton, but can now
