@@ -19,7 +19,6 @@ public class Game : Microsoft.Xna.Framework.Game
     private const int CharacterRowCount = 25;
     private const int CharacterColCount = 40;
     private const int CharacterCount = CharacterRowCount * CharacterColCount;
-    private static readonly Random Random = new();
 
     private Profiler _profiler;
     private HeadsUpDisplay _hud;
@@ -37,7 +36,7 @@ public class Game : Microsoft.Xna.Framework.Game
 
     private Model? _characterModel;
     private AnimationSet _animationSet;
-    private Effect? _skinnedEffect;
+    private SkinnedVertexColoredEffect? _skinnedEffect;
 
     private bool _isHeadDown;
     KeyboardState _prevKeyboardState;
@@ -74,8 +73,6 @@ public class Game : Microsoft.Xna.Framework.Game
         _stateQuery = new QueryDescription().WithAll<CharacterState>();
         _animationQuery = new QueryDescription().WithAll<CharacterState, AnimationState, BoneTransforms>();
         _drawQuery = new QueryDescription().WithAll<Position, BoneTransforms>();
-
-        // _animationPlayer = new AnimationPlayer();
     }
 
     protected override void Initialize()
@@ -133,13 +130,15 @@ public class Game : Microsoft.Xna.Framework.Game
 
         _animationSet = Content.Load<AnimationSet>("Models/man_anims");
 
-        _skinnedEffect = Content.Load<Effect>("Effects/SkinnedVertexColoredEffect");
-        _skinnedEffect.Parameters["DiffuseColor"].SetValue(new Vector4(1f));
-        _skinnedEffect.Parameters["AmbientColor"].SetValue(new Vector3(0.2f));
-        _skinnedEffect.Parameters["SpecularPower"].SetValue(16);
-        _skinnedEffect.Parameters["DirLight0Direction"].SetValue(new Vector3(-1, -1, 1));
-        _skinnedEffect.Parameters["DirLight0DiffuseColor"].SetValue(new Vector3(0.43f, 0.4f, 0.4f));
-        _skinnedEffect.Parameters["DirLight0SpecularColor"].SetValue(new Vector3(0));
+        _skinnedEffect = new SkinnedVertexColoredEffect(Content, "Effects/SkinnedVertexColoredEffect")
+        {
+            DiffuseColor = new Vector4(1f),
+            AmbientColor = new Vector3(0.2f),
+            SpecularPower = 16,
+            DirLight0Direction = new Vector3(-1, -1, 1),
+            DirLight0DiffuseColor = new Vector3(0.43f, 0.4f, 0.4f),
+            DirLight0SpecularColor = new Vector3(0)
+        };
     }
 
     protected override void Update(GameTime gameTime)
@@ -188,7 +187,7 @@ public class Game : Microsoft.Xna.Framework.Game
             GameTime = gameTime,
             IsHeadDown = _isHeadDown
         };
-        _world.InlineQuery<StateSystem, CharacterState>(in _stateQuery, ref stateSystem);
+        _world.InlineParallelQuery<StateSystem, CharacterState>(in _stateQuery, ref stateSystem);
     }
 
     protected override void Draw(GameTime gameTime)
@@ -223,8 +222,7 @@ public class Game : Microsoft.Xna.Framework.Game
         var drawSystem = new DrawSystem
         {
             GraphicsDevice = GraphicsDevice,
-            CameraView = _cameraView,
-            CameraProjection = _cameraProjection,
+            CameraViewProjection = _cameraView * _cameraProjection,
             CharacterModel = _characterModel,
             Effect = _skinnedEffect,
             Hud = _hud,
@@ -254,7 +252,7 @@ public class Game : Microsoft.Xna.Framework.Game
             {
                 characterState.IsWaving = false;
             }
-            else if (Random.NextSingle() < 1 / (float)CharacterCount)
+            else if (Random.Shared.NextSingle() < 1 / (float)CharacterCount)
             {
                 characterState.IsWaving = true;
             }
@@ -347,22 +345,17 @@ public class Game : Microsoft.Xna.Framework.Game
     private struct DrawSystem : IForEach<Position, BoneTransforms>
     {
         public required GraphicsDevice GraphicsDevice;
-        public required Matrix CameraView;
-        public required Matrix CameraProjection;
+        public required Matrix CameraViewProjection;
         public required Model CharacterModel;
-        public required Effect Effect;
+        public required SkinnedVertexColoredEffect Effect;
         public required HeadsUpDisplay Hud;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly void Update(ref Position position, ref BoneTransforms boneTransforms) {
-            var bonesParam = Effect.Parameters["Bones"];
-            var worldParam = Effect.Parameters["World"];
-            var worldTransposeParam = Effect.Parameters["WorldInverseTranspose"];
-            var worldViewProjParam = Effect.Parameters["WorldViewProj"];
-            bonesParam.SetValue(boneTransforms.Matrices);
-            worldParam.SetValue(position.Transform);
-            worldTransposeParam.SetValue(Matrix.Transpose(Matrix.Invert(position.Transform)));
-            worldViewProjParam.SetValue(position.Transform * CameraView * CameraProjection);
+            Effect.Bones = boneTransforms.Matrices;
+            Effect.World = position.Transform;
+            Effect.WorldInverseTranspose = Matrix.Transpose(Matrix.Invert(position.Transform));
+            Effect.WorldViewProj = position.Transform * CameraViewProjection;
             for (int meshIndex = 0; meshIndex < CharacterModel.Meshes.Length; ++meshIndex)
             {
                 var mesh = CharacterModel.Meshes[meshIndex];
